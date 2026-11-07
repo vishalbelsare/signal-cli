@@ -7,6 +7,9 @@ import org.asamk.signal.manager.api.MessageEnvelope;
 import java.util.List;
 import java.util.UUID;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "Quote")
 public record JsonQuote(
         long id,
         @Deprecated String author,
@@ -14,7 +17,8 @@ public record JsonQuote(
         String authorUuid,
         String text,
         @JsonInclude(JsonInclude.Include.NON_NULL) List<JsonMention> mentions,
-        List<JsonQuotedAttachment> attachments
+        List<JsonQuotedAttachment> attachments,
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<JsonTextStyle> textStyles
 ) {
 
     static JsonQuote from(MessageEnvelope.Data.Quote quote) {
@@ -25,15 +29,20 @@ public record JsonQuote(
         final var authorUuid = address.uuid().map(UUID::toString).orElse(null);
         final var text = quote.text().orElse(null);
 
-        final var mentions = quote.mentions().size() > 0
+        final var mentions = !quote.mentions().isEmpty()
                 ? quote.mentions().stream().map(JsonMention::from).toList()
                 : null;
 
-        final var attachments = quote.attachments().size() > 0 ? quote.attachments()
+        final var attachments = !quote.attachments().isEmpty() ? quote.attachments()
                 .stream()
                 .map(JsonQuotedAttachment::from)
                 .toList() : List.<JsonQuotedAttachment>of();
 
-        return new JsonQuote(id, author, authorNumber, authorUuid, text, mentions, attachments);
+        final var textStyles = !quote.textStyles().isEmpty() ? quote.textStyles()
+                .stream()
+                .map(JsonTextStyle::from)
+                .toList() : null;
+
+        return new JsonQuote(id, author, authorNumber, authorUuid, text, mentions, attachments, textStyles);
     }
 }

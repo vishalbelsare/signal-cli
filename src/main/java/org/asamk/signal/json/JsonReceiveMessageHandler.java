@@ -10,7 +10,7 @@ import java.util.HashMap;
 
 public class JsonReceiveMessageHandler implements Manager.ReceiveMessageHandler {
 
-    private final static Logger logger = LoggerFactory.getLogger(JsonReceiveMessageHandler.class);
+    private static final Logger logger = LoggerFactory.getLogger(JsonReceiveMessageHandler.class);
 
     private final Manager m;
     private final JsonWriter jsonWriter;
@@ -23,9 +23,9 @@ public class JsonReceiveMessageHandler implements Manager.ReceiveMessageHandler 
     @Override
     public void handleMessage(MessageEnvelope envelope, Throwable exception) {
         final var object = new HashMap<String, Object>();
-        object.put("account", m.getSelfNumber());
+        object.put("account", m.getSelfIdentifier());
         if (exception != null) {
-            object.put("error", JsonError.from(exception));
+            object.put("exception", JsonError.from(exception));
         }
 
         if (envelope != null) {

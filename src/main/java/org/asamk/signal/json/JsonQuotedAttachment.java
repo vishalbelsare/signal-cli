@@ -4,6 +4,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 
 import org.asamk.signal.manager.api.MessageEnvelope;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "QuotedAttachment")
 public record JsonQuotedAttachment(
         String contentType, String filename, @JsonInclude(JsonInclude.Include.NON_NULL) JsonAttachment thumbnail
 ) {

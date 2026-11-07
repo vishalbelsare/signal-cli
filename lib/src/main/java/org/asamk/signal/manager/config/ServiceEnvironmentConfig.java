@@ -1,43 +1,17 @@
 package org.asamk.signal.manager.config;
 
-import org.whispersystems.libsignal.ecc.ECPublicKey;
-import org.whispersystems.signalservice.internal.configuration.SignalServiceConfiguration;
+import org.asamk.signal.manager.api.ServiceEnvironment;
+import org.signal.libsignal.net.Network;
+import org.signal.libsignal.protocol.ecc.ECPublicKey;
+import org.signal.network.config.SignalServiceConfiguration;
 
-public class ServiceEnvironmentConfig {
+import java.util.List;
 
-    private final SignalServiceConfiguration signalServiceConfiguration;
-
-    private final ECPublicKey unidentifiedSenderTrustRoot;
-
-    private final KeyBackupConfig keyBackupConfig;
-
-    private final String cdsMrenclave;
-
-    public ServiceEnvironmentConfig(
-            final SignalServiceConfiguration signalServiceConfiguration,
-            final ECPublicKey unidentifiedSenderTrustRoot,
-            final KeyBackupConfig keyBackupConfig,
-            final String cdsMrenclave
-    ) {
-        this.signalServiceConfiguration = signalServiceConfiguration;
-        this.unidentifiedSenderTrustRoot = unidentifiedSenderTrustRoot;
-        this.keyBackupConfig = keyBackupConfig;
-        this.cdsMrenclave = cdsMrenclave;
-    }
-
-    public SignalServiceConfiguration getSignalServiceConfiguration() {
-        return signalServiceConfiguration;
-    }
-
-    public ECPublicKey getUnidentifiedSenderTrustRoot() {
-        return unidentifiedSenderTrustRoot;
-    }
-
-    public KeyBackupConfig getKeyBackupConfig() {
-        return keyBackupConfig;
-    }
-
-    public String getCdsMrenclave() {
-        return cdsMrenclave;
-    }
-}
+public record ServiceEnvironmentConfig(
+        ServiceEnvironment type,
+        Network.Environment netEnvironment,
+        SignalServiceConfiguration signalServiceConfiguration,
+        List<ECPublicKey> unidentifiedSenderTrustRoots,
+        String cdsiMrenclave,
+        List<String> svr2Mrenclaves
+) {}

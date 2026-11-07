@@ -2,11 +2,14 @@ package org.asamk.signal.json;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.GroupId;
 import org.asamk.signal.manager.api.MessageEnvelope;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
+import org.asamk.signal.manager.api.RecipientAddress;
 
 import java.util.List;
+
+import io.micronaut.jsonschema.JsonSchema;
 
 enum JsonSyncMessageType {
     CONTACTS_SYNC,
@@ -14,31 +17,22 @@ enum JsonSyncMessageType {
     REQUEST_SYNC
 }
 
+@JsonSchema(title = "SyncMessage")
 record JsonSyncMessage(
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonSyncDataMessage sentMessage,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonSyncStoryMessage sentStoryMessage,
         @JsonInclude(JsonInclude.Include.NON_NULL) List<String> blockedNumbers,
         @JsonInclude(JsonInclude.Include.NON_NULL) List<String> blockedGroupIds,
         @JsonInclude(JsonInclude.Include.NON_NULL) List<JsonSyncReadMessage> readMessages,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonSyncMessageType type
 ) {
 
-    JsonSyncMessage(
-            final JsonSyncDataMessage sentMessage,
-            final List<String> blockedNumbers,
-            final List<String> blockedGroupIds,
-            final List<JsonSyncReadMessage> readMessages,
-            final JsonSyncMessageType type
-    ) {
-        this.sentMessage = sentMessage;
-        this.blockedNumbers = blockedNumbers;
-        this.blockedGroupIds = blockedGroupIds;
-        this.readMessages = readMessages;
-        this.type = type;
-    }
-
-    static JsonSyncMessage from(MessageEnvelope.Sync syncMessage) {
-        final var sentMessage = syncMessage.sent().isPresent()
-                ? JsonSyncDataMessage.from(syncMessage.sent().get())
+    static JsonSyncMessage from(MessageEnvelope.Sync syncMessage, Manager m) {
+        final var sentMessage = syncMessage.sent().isPresent() && syncMessage.sent().get().story().isEmpty()
+                ? JsonSyncDataMessage.from(syncMessage.sent().get(), m)
+                : null;
+        final var sentStoryMessage = syncMessage.sent().isPresent() && syncMessage.sent().get().story().isPresent()
+                ? JsonSyncStoryMessage.from(syncMessage.sent().get())
                 : null;
         final List<String> blockedNumbers;
         final List<String> blockedGroupIds;
@@ -55,7 +49,7 @@ record JsonSyncMessage(
             blockedGroupIds = null;
         }
 
-        final var readMessages = syncMessage.read().size() > 0 ? syncMessage.read()
+        final var readMessages = !syncMessage.read().isEmpty() ? syncMessage.read()
                 .stream()
                 .map(JsonSyncReadMessage::from)
                 .toList() : null;
@@ -68,6 +62,6 @@ record JsonSyncMessage(
         } else {
             type = null;
         }
-        return new JsonSyncMessage(sentMessage, blockedNumbers, blockedGroupIds, readMessages, type);
+        return new JsonSyncMessage(sentMessage, sentStoryMessage, blockedNumbers, blockedGroupIds, readMessages, type);
     }
 }

@@ -7,17 +7,17 @@ import net.sourceforge.argparse4j.inf.Subparser;
 import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.commands.exceptions.UnexpectedErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
-import org.asamk.signal.manager.AttachmentInvalidException;
 import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.AttachmentInvalidException;
+import org.asamk.signal.manager.api.GroupId;
+import org.asamk.signal.manager.api.GroupLinkState;
+import org.asamk.signal.manager.api.GroupNotFoundException;
+import org.asamk.signal.manager.api.GroupPermission;
+import org.asamk.signal.manager.api.GroupSendingNotAllowedException;
+import org.asamk.signal.manager.api.NotAGroupMemberException;
 import org.asamk.signal.manager.api.SendGroupMessageResults;
 import org.asamk.signal.manager.api.UnregisteredRecipientException;
 import org.asamk.signal.manager.api.UpdateGroup;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.groups.GroupLinkState;
-import org.asamk.signal.manager.groups.GroupNotFoundException;
-import org.asamk.signal.manager.groups.GroupPermission;
-import org.asamk.signal.manager.groups.GroupSendingNotAllowedException;
-import org.asamk.signal.manager.groups.NotAGroupMemberException;
 import org.asamk.signal.output.JsonWriter;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.output.PlainTextWriter;
@@ -26,14 +26,13 @@ import org.asamk.signal.util.SendMessageResultUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.stream.Stream;
 
 public class UpdateGroupCommand implements JsonRpcLocalCommand {
 
-    private final static Logger logger = LoggerFactory.getLogger(UpdateGroupCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(UpdateGroupCommand.class);
 
     @Override
     public String getName() {
@@ -55,6 +54,8 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
         subparser.addArgument("--remove-admin")
                 .nargs("*")
                 .help("Specify one or more members to remove group admin privileges");
+        subparser.addArgument("--ban").nargs("*").help("Specify one or more members to ban from joining the group");
+        subparser.addArgument("--unban").nargs("*").help("Specify one or more members to remove from the ban list");
 
         subparser.addArgument("--reset-link")
                 .action(Arguments.storeTrue())
@@ -74,6 +75,8 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
                 .choices("every-member", "only-admins");
 
         subparser.addArgument("-e", "--expiration").type(int.class).help("Set expiration time of messages (seconds)");
+        subparser.addArgument("--member-label-emoji").help("Specify the emoji for the member label.");
+        subparser.addArgument("--member-label").help("Specify the string for the member label.");
     }
 
     GroupLinkState getGroupLinkState(String value) throws UserErrorException {
@@ -101,7 +104,9 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         final var groupIdString = ns.getString("group-id");
         var groupId = CommandUtil.getGroupId(groupIdString);
@@ -114,6 +119,8 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
         var groupRemoveMembers = CommandUtil.getSingleRecipientIdentifiers(ns.getList("remove-member"), localNumber);
         var groupAdmins = CommandUtil.getSingleRecipientIdentifiers(ns.getList("admin"), localNumber);
         var groupRemoveAdmins = CommandUtil.getSingleRecipientIdentifiers(ns.getList("remove-admin"), localNumber);
+        var groupBan = CommandUtil.getSingleRecipientIdentifiers(ns.getList("ban"), localNumber);
+        var groupUnban = CommandUtil.getSingleRecipientIdentifiers(ns.getList("unban"), localNumber);
         var groupAvatar = ns.getString("avatar");
         var groupResetLink = Boolean.TRUE.equals(ns.getBoolean("reset-link"));
         var groupLinkState = getGroupLinkState(ns.getString("link"));
@@ -121,15 +128,15 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
         var groupAddMemberPermission = getGroupPermission(ns.getString("set-permission-add-member"));
         var groupEditDetailsPermission = getGroupPermission(ns.getString("set-permission-edit-details"));
         var groupSendMessagesPermission = getGroupPermission(ns.getString("set-permission-send-messages"));
+        var memberLabelEmoji = ns.getString("member-label-emoji");
+        var memberLabelString = ns.getString("member-label");
 
         try {
             boolean isNewGroup = false;
             SendGroupMessageResults groupMessageResults = null;
             if (groupId == null) {
                 isNewGroup = true;
-                var results = m.createGroup(groupName,
-                        groupMembers,
-                        groupAvatar == null ? null : new File(groupAvatar));
+                var results = m.createGroup(groupName, groupMembers, groupAvatar);
                 groupMessageResults = results.second();
                 groupId = results.first();
                 groupName = null;
@@ -145,15 +152,19 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
                             .withRemoveMembers(groupRemoveMembers)
                             .withAdmins(groupAdmins)
                             .withRemoveAdmins(groupRemoveAdmins)
+                            .withBanMembers(groupBan)
+                            .withUnbanMembers(groupUnban)
                             .withResetGroupLink(groupResetLink)
                             .withGroupLinkState(groupLinkState)
                             .withAddMemberPermission(groupAddMemberPermission)
                             .withEditDetailsPermission(groupEditDetailsPermission)
-                            .withAvatarFile(groupAvatar == null ? null : new File(groupAvatar))
+                            .withAvatarFile(groupAvatar)
                             .withExpirationTimer(groupExpiration)
                             .withIsAnnouncementGroup(groupSendMessagesPermission == null
                                     ? null
                                     : groupSendMessagesPermission == GroupPermission.ONLY_ADMINS)
+                            .withLabelEmoji(memberLabelEmoji)
+                            .withLabelString(memberLabelString)
                             .build());
             if (results != null) {
                 if (groupMessageResults == null) {
@@ -177,29 +188,33 @@ public class UpdateGroupCommand implements JsonRpcLocalCommand {
     }
 
     private void outputResult(
-            final OutputWriter outputWriter, final SendGroupMessageResults results, final GroupId groupId
+            final OutputWriter outputWriter,
+            final SendGroupMessageResults results,
+            final GroupId groupId
     ) {
-        if (outputWriter instanceof PlainTextWriter writer) {
-            if (groupId != null) {
-                writer.println("Created new group: \"{}\"", groupId.toBase64());
+        switch (outputWriter) {
+            case PlainTextWriter writer -> {
+                if (groupId != null) {
+                    writer.println("Created new group: \"{}\"", groupId.toBase64());
+                }
+                if (results != null) {
+                    var errors = SendMessageResultUtils.getErrorMessagesFromSendMessageResults(results.results());
+                    SendMessageResultUtils.printSendMessageResultErrors(writer, errors);
+                    writer.println("{}", results.timestamp());
+                }
             }
-            if (results != null) {
-                var errors = SendMessageResultUtils.getErrorMessagesFromSendMessageResults(results.results());
-                SendMessageResultUtils.printSendMessageResultErrors(writer, errors);
-                writer.println("{}", results.timestamp());
+            case JsonWriter writer -> {
+                final var response = new HashMap<>();
+                if (results != null) {
+                    response.put("timestamp", results.timestamp());
+                    var jsonResults = SendMessageResultUtils.getJsonSendMessageResults(results.results());
+                    response.put("results", jsonResults);
+                }
+                if (groupId != null) {
+                    response.put("groupId", groupId.toBase64());
+                }
+                writer.write(response);
             }
-        } else {
-            final var writer = (JsonWriter) outputWriter;
-            final var response = new HashMap<>();
-            if (results != null) {
-                response.put("timestamp", results.timestamp());
-                var jsonResults = SendMessageResultUtils.getJsonSendMessageResults(results.results());
-                response.put("results", jsonResults);
-            }
-            if (groupId != null) {
-                response.put("groupId", groupId.toBase64());
-            }
-            writer.write(response);
         }
     }
 }

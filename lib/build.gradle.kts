@@ -4,23 +4,41 @@ plugins {
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+
+    if (!JavaVersion.current().isCompatibleWith(targetCompatibility)) {
+        toolchain {
+            languageVersion.set(JavaLanguageVersion.of(targetCompatibility.majorVersion))
+        }
+    }
 }
 
-repositories {
-    mavenLocal()
-    mavenCentral()
-}
+val libsignalClientPath = project.findProperty("libsignal_client_path")?.toString()
 
 dependencies {
-    implementation("com.github.turasa", "signal-service-java", "2.15.3_unofficial_39")
-    implementation("com.fasterxml.jackson.core", "jackson-databind", "2.13.1")
-    implementation("com.google.protobuf", "protobuf-javalite", "3.11.4")
-    implementation("org.bouncycastle", "bcprov-jdk15on", "1.70")
-    implementation("org.slf4j", "slf4j-api", "1.7.32")
-    implementation("org.xerial", "sqlite-jdbc", "3.36.0.3")
-    implementation("com.zaxxer", "HikariCP", "5.0.1")
+    if (libsignalClientPath == null) {
+        implementation(libs.signalnetwork)
+    } else {
+        implementation(libs.signalnetwork) {
+            exclude(group = "org.signal", module = "libsignal-client")
+        }
+        implementation(files(libsignalClientPath))
+    }
+    implementation(libs.jackson.databind)
+    implementation(libs.bouncycastle)
+    implementation(libs.slf4j.api)
+    implementation(libs.sqlite)
+    implementation(libs.hikari)
+    compileOnly(libs.kotlinx.coroutines.core)
+
+    testImplementation(libs.junit.jupiter)
+    testImplementation(platform(libs.junit.jupiter.bom))
+    testRuntimeOnly(libs.junit.launcher)
+}
+
+tasks.named<Test>("test") {
+    useJUnitPlatform()
 }
 
 configurations {

@@ -4,6 +4,9 @@ import org.asamk.signal.manager.api.MessageEnvelope;
 
 import java.util.UUID;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "SyncReadMessage")
 record JsonSyncReadMessage(
         @Deprecated String sender, String senderNumber, String senderUuid, long timestamp
 ) {

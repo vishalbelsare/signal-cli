@@ -6,6 +6,9 @@ import org.asamk.signal.manager.api.MessageEnvelope;
 
 import java.util.List;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "SharedContact")
 public record JsonSharedContact(
         JsonContactName name,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonContactAvatar avatar,
@@ -19,15 +22,15 @@ public record JsonSharedContact(
         final var name = JsonContactName.from(contact.name());
         final var avatar = contact.avatar().isPresent() ? JsonContactAvatar.from(contact.avatar().get()) : null;
 
-        final var phone = contact.phone().size() > 0
+        final var phone = !contact.phone().isEmpty()
                 ? contact.phone().stream().map(JsonContactPhone::from).toList()
                 : null;
 
-        final var email = contact.email().size() > 0
+        final var email = !contact.email().isEmpty()
                 ? contact.email().stream().map(JsonContactEmail::from).toList()
                 : null;
 
-        final var address = contact.address().size() > 0 ? contact.address()
+        final var address = !contact.address().isEmpty() ? contact.address()
                 .stream()
                 .map(JsonContactAddress::from)
                 .toList() : null;

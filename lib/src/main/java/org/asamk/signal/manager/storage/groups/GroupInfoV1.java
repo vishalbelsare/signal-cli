@@ -1,9 +1,9 @@
 package org.asamk.signal.manager.storage.groups;
 
-import org.asamk.signal.manager.groups.GroupIdV1;
-import org.asamk.signal.manager.groups.GroupIdV2;
-import org.asamk.signal.manager.groups.GroupInviteLinkUrl;
-import org.asamk.signal.manager.groups.GroupPermission;
+import org.asamk.signal.manager.api.GroupIdV1;
+import org.asamk.signal.manager.api.GroupIdV2;
+import org.asamk.signal.manager.api.GroupInviteLinkUrl;
+import org.asamk.signal.manager.api.GroupPermission;
 import org.asamk.signal.manager.groups.GroupUtils;
 import org.asamk.signal.manager.storage.recipients.RecipientId;
 import org.whispersystems.signalservice.api.push.DistributionId;
@@ -24,7 +24,9 @@ public final class GroupInfoV1 extends GroupInfo {
     public String color;
     public int messageExpirationTime;
     public boolean blocked;
+    private long blockedAt;
     public boolean archived;
+    private byte[] storageRecord;
 
     public GroupInfoV1(GroupIdV1 groupId) {
         this.groupId = groupId;
@@ -38,16 +40,20 @@ public final class GroupInfoV1 extends GroupInfo {
             final String color,
             final int messageExpirationTime,
             final boolean blocked,
-            final boolean archived
+            final long blockedAt,
+            final boolean archived,
+            final byte[] storageRecord
     ) {
         this.groupId = groupId;
         this.expectedV2Id = expectedV2Id;
         this.name = name;
-        this.members = members;
+        this.members = new HashSet<>(members);
         this.color = color;
         this.messageExpirationTime = messageExpirationTime;
         this.blocked = blocked;
+        this.blockedAt = blockedAt;
         this.archived = archived;
+        this.storageRecord = storageRecord;
     }
 
     @Override
@@ -77,8 +83,8 @@ public final class GroupInfoV1 extends GroupInfo {
         return null;
     }
 
-    public Set<RecipientId> getMembers() {
-        return members;
+    public Collection<GroupMemberInfo> getMembers() {
+        return members.stream().map(m -> (GroupMemberInfo) new GroupMemberInfoV1(m)).toList();
     }
 
     @Override
@@ -88,7 +94,31 @@ public final class GroupInfoV1 extends GroupInfo {
 
     @Override
     public void setBlocked(final boolean blocked) {
+        if (blocked && !this.blocked) {
+            blockedAt = System.currentTimeMillis();
+        } else if (!blocked) {
+            blockedAt = 0;
+        }
         this.blocked = blocked;
+    }
+
+    @Override
+    public long getBlockedAt() {
+        return blockedAt;
+    }
+
+    @Override
+    public void setBlockedAt(final long blockedAt) {
+        this.blockedAt = blockedAt;
+    }
+
+    @Override
+    public boolean isProfileSharingEnabled() {
+        return true;
+    }
+
+    @Override
+    public void setProfileSharingEnabled(final boolean profileSharingEnabled) {
     }
 
     @Override
@@ -98,6 +128,11 @@ public final class GroupInfoV1 extends GroupInfo {
 
     @Override
     public boolean isAnnouncementGroup() {
+        return false;
+    }
+
+    @Override
+    public boolean isTerminated() {
         return false;
     }
 
@@ -122,5 +157,9 @@ public final class GroupInfoV1 extends GroupInfo {
 
     public void removeMember(RecipientId recipientId) {
         this.members.removeIf(member -> member.equals(recipientId));
+    }
+
+    public byte[] getStorageRecord() {
+        return storageRecord;
     }
 }

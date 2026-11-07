@@ -5,6 +5,7 @@ import org.asamk.signal.manager.RegistrationManager;
 import org.asamk.signal.manager.api.CaptchaRequiredException;
 import org.asamk.signal.manager.api.IncorrectPinException;
 import org.asamk.signal.manager.api.PinLockedException;
+import org.asamk.signal.manager.api.TwoFactorRequired;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 
 import java.io.IOException;
@@ -27,8 +28,13 @@ public class DbusRegistrationManagerImpl implements RegistrationManager {
 
     @Override
     public void register(
-            final boolean voiceVerification, final String captcha
+            final boolean voiceVerification,
+            final String captcha,
+            final boolean forceRegister
     ) throws IOException, CaptchaRequiredException {
+        if (forceRegister) {
+            throw new UnsupportedOperationException();
+        }
         if (captcha == null) {
             signalControl.register(number, voiceVerification);
         } else {
@@ -38,13 +44,33 @@ public class DbusRegistrationManagerImpl implements RegistrationManager {
 
     @Override
     public void verifyAccount(
-            final String verificationCode, final String pin
+            final String verificationCode,
+            final String pin
     ) throws IOException, PinLockedException, IncorrectPinException {
         if (pin == null) {
             signalControl.verify(number, verificationCode);
         } else {
             signalControl.verifyWithPin(number, verificationCode, pin);
         }
+    }
+
+    @Override
+    public void registerWithRecoveryKey(
+            final String recoveryKey,
+            final boolean forceRegister,
+            final Integer totp
+    ) throws IOException, TwoFactorRequired {
+        throw new IOException("Recovery-key registration is not supported over D-Bus");
+    }
+
+    @Override
+    public void deleteLocalAccountData() throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isRegistered() {
+        throw new UnsupportedOperationException();
     }
 
     @Override

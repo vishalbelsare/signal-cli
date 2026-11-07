@@ -2,10 +2,9 @@ package org.asamk.signal.manager.util;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.asamk.signal.manager.JsonStickerPack;
-import org.asamk.signal.manager.StickerPackInvalidException;
 import org.asamk.signal.manager.api.Pair;
-import org.whispersystems.libsignal.util.guava.Optional;
+import org.asamk.signal.manager.api.StickerPackInvalidException;
+import org.asamk.signal.manager.storage.stickerPacks.JsonStickerPack;
 import org.whispersystems.signalservice.api.messages.SignalServiceStickerManifestUpload;
 
 import java.io.BufferedInputStream;
@@ -13,8 +12,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URLConnection;
 import java.util.ArrayList;
+import java.util.Optional;
 import java.util.zip.ZipFile;
 
 public class StickerUtils {
@@ -61,7 +60,7 @@ public class StickerUtils {
                     : getContentType(rootPath, zip, sticker.file());
             var stickerInfo = new SignalServiceStickerManifestUpload.StickerInfo(data.first(),
                     data.second(),
-                    Optional.fromNullable(sticker.emoji()).or(""),
+                    Optional.ofNullable(sticker.emoji()).orElse(""),
                     contentType);
             stickers.add(stickerInfo);
         }
@@ -83,7 +82,7 @@ public class StickerUtils {
                     .contentType() : getContentType(rootPath, zip, pack.cover().file());
             cover = new SignalServiceStickerManifestUpload.StickerInfo(data.first(),
                     data.second(),
-                    Optional.fromNullable(pack.cover().emoji()).or(""),
+                    Optional.ofNullable(pack.cover().emoji()).orElse(""),
                     contentType);
         }
 
@@ -101,7 +100,9 @@ public class StickerUtils {
     }
 
     private static Pair<InputStream, Long> getInputStreamAndLength(
-            final String rootPath, final ZipFile zip, final String subfile
+            final String rootPath,
+            final ZipFile zip,
+            final String subfile
     ) throws IOException {
         if (zip != null) {
             final var entry = zip.getEntry(subfile);
@@ -113,16 +114,18 @@ public class StickerUtils {
     }
 
     private static String getContentType(
-            final String rootPath, final ZipFile zip, final String subfile
+            final String rootPath,
+            final ZipFile zip,
+            final String subfile
     ) throws IOException {
         if (zip != null) {
             final var entry = zip.getEntry(subfile);
             try (InputStream bufferedStream = new BufferedInputStream(zip.getInputStream(entry))) {
-                return URLConnection.guessContentTypeFromStream(bufferedStream);
+                return MimeUtils.getStreamMimeType(bufferedStream).orElse(null);
             }
         } else {
             final var file = new File(rootPath, subfile);
-            return Utils.getFileMimeType(file, null);
+            return MimeUtils.getFileMimeType(file).orElse(null);
         }
     }
 }

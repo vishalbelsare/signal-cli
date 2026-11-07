@@ -1,7 +1,9 @@
 package org.asamk.signal.manager.storage.recipients;
 
-import org.signal.zkgroup.profiles.ProfileKey;
-import org.signal.zkgroup.profiles.ProfileKeyCredential;
+import org.asamk.signal.manager.api.Contact;
+import org.asamk.signal.manager.api.Profile;
+import org.signal.libsignal.zkgroup.profiles.ExpiringProfileKeyCredential;
+import org.signal.libsignal.zkgroup.profiles.ProfileKey;
 
 import java.util.Objects;
 
@@ -15,24 +17,40 @@ public class Recipient {
 
     private final ProfileKey profileKey;
 
-    private final ProfileKeyCredential profileKeyCredential;
+    private final ExpiringProfileKeyCredential expiringProfileKeyCredential;
 
     private final Profile profile;
+
+    private final Boolean discoverable;
+
+    private final Long unregisteredTimestamp;
+
+    private final boolean pniSignatureVerified;
+
+    private final byte[] storageRecord;
 
     public Recipient(
             final RecipientId recipientId,
             final RecipientAddress address,
             final Contact contact,
             final ProfileKey profileKey,
-            final ProfileKeyCredential profileKeyCredential,
-            final Profile profile
+            final ExpiringProfileKeyCredential expiringProfileKeyCredential,
+            final Profile profile,
+            final Boolean discoverable,
+            final Long unregisteredTimestamp,
+            final boolean pniSignatureVerified,
+            final byte[] storageRecord
     ) {
         this.recipientId = recipientId;
         this.address = address;
         this.contact = contact;
         this.profileKey = profileKey;
-        this.profileKeyCredential = profileKeyCredential;
+        this.expiringProfileKeyCredential = expiringProfileKeyCredential;
         this.profile = profile;
+        this.discoverable = discoverable;
+        this.unregisteredTimestamp = unregisteredTimestamp;
+        this.pniSignatureVerified = pniSignatureVerified;
+        this.storageRecord = storageRecord;
     }
 
     private Recipient(final Builder builder) {
@@ -40,8 +58,12 @@ public class Recipient {
         address = builder.address;
         contact = builder.contact;
         profileKey = builder.profileKey;
-        profileKeyCredential = builder.profileKeyCredential;
+        expiringProfileKeyCredential = builder.expiringProfileKeyCredential;
         profile = builder.profile;
+        discoverable = builder.discoverable;
+        unregisteredTimestamp = builder.unregisteredTimestamp;
+        pniSignatureVerified = builder.pniSignatureVerified;
+        storageRecord = builder.storageRecord;
     }
 
     public static Builder newBuilder() {
@@ -54,8 +76,12 @@ public class Recipient {
         builder.address = copy.getAddress();
         builder.contact = copy.getContact();
         builder.profileKey = copy.getProfileKey();
-        builder.profileKeyCredential = copy.getProfileKeyCredential();
+        builder.expiringProfileKeyCredential = copy.getExpiringProfileKeyCredential();
         builder.profile = copy.getProfile();
+        builder.discoverable = copy.getDiscoverable();
+        builder.unregisteredTimestamp = copy.getUnregisteredTimestamp();
+        builder.pniSignatureVerified = copy.isPniSignatureVerified();
+        builder.storageRecord = copy.getStorageRecord();
         return builder;
     }
 
@@ -75,12 +101,32 @@ public class Recipient {
         return profileKey;
     }
 
-    public ProfileKeyCredential getProfileKeyCredential() {
-        return profileKeyCredential;
+    public ExpiringProfileKeyCredential getExpiringProfileKeyCredential() {
+        return expiringProfileKeyCredential;
     }
 
     public Profile getProfile() {
         return profile;
+    }
+
+    public Boolean getDiscoverable() {
+        return discoverable;
+    }
+
+    public Long getUnregisteredTimestamp() {
+        return unregisteredTimestamp;
+    }
+
+    public boolean isRegistered() {
+        return unregisteredTimestamp == null;
+    }
+
+    public boolean isPniSignatureVerified() {
+        return pniSignatureVerified;
+    }
+
+    public byte[] getStorageRecord() {
+        return storageRecord;
     }
 
     @Override
@@ -92,13 +138,20 @@ public class Recipient {
                 && Objects.equals(address, recipient.address)
                 && Objects.equals(contact, recipient.contact)
                 && Objects.equals(profileKey, recipient.profileKey)
-                && Objects.equals(profileKeyCredential, recipient.profileKeyCredential)
-                && Objects.equals(profile, recipient.profile);
+                && Objects.equals(expiringProfileKeyCredential, recipient.expiringProfileKeyCredential)
+                && Objects.equals(profile, recipient.profile)
+                && pniSignatureVerified == recipient.pniSignatureVerified;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(recipientId, address, contact, profileKey, profileKeyCredential, profile);
+        return Objects.hash(recipientId,
+                address,
+                contact,
+                profileKey,
+                expiringProfileKeyCredential,
+                profile,
+                pniSignatureVerified);
     }
 
     public static final class Builder {
@@ -107,8 +160,12 @@ public class Recipient {
         private RecipientAddress address;
         private Contact contact;
         private ProfileKey profileKey;
-        private ProfileKeyCredential profileKeyCredential;
+        private ExpiringProfileKeyCredential expiringProfileKeyCredential;
         private Profile profile;
+        private Boolean discoverable;
+        private Long unregisteredTimestamp;
+        private boolean pniSignatureVerified;
+        private byte[] storageRecord;
 
         private Builder() {
         }
@@ -133,13 +190,33 @@ public class Recipient {
             return this;
         }
 
-        public Builder withProfileKeyCredential(final ProfileKeyCredential val) {
-            profileKeyCredential = val;
+        public Builder withExpiringProfileKeyCredential(final ExpiringProfileKeyCredential val) {
+            expiringProfileKeyCredential = val;
             return this;
         }
 
         public Builder withProfile(final Profile val) {
             profile = val;
+            return this;
+        }
+
+        public Builder withDiscoverable(final Boolean val) {
+            discoverable = val;
+            return this;
+        }
+
+        public Builder withUnregisteredTimestamp(final Long val) {
+            unregisteredTimestamp = val;
+            return this;
+        }
+
+        public Builder withPniSignatureVerified(final boolean val) {
+            pniSignatureVerified = val;
+            return this;
+        }
+
+        public Builder withStorageRecord(final byte[] val) {
+            storageRecord = val;
             return this;
         }
 

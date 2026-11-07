@@ -1,11 +1,12 @@
 package org.asamk.signal;
 
 import org.asamk.signal.manager.Manager;
-import org.asamk.signal.manager.UntrustedIdentityException;
+import org.asamk.signal.manager.api.GroupId;
 import org.asamk.signal.manager.api.MessageEnvelope;
+import org.asamk.signal.manager.api.RecipientAddress;
 import org.asamk.signal.manager.api.RecipientIdentifier;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
+import org.asamk.signal.manager.api.TextStyle;
+import org.asamk.signal.manager.api.UntrustedIdentityException;
 import org.asamk.signal.output.PlainTextWriter;
 import org.asamk.signal.util.DateUtils;
 import org.asamk.signal.util.Hex;
@@ -13,6 +14,8 @@ import org.slf4j.helpers.MessageFormatter;
 
 import java.util.ArrayList;
 import java.util.stream.Collectors;
+
+import static org.asamk.signal.manager.util.Utils.callIdUnsigned;
 
 public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
 
@@ -33,9 +36,10 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
 
     private void handleMessageInternal(MessageEnvelope envelope, Throwable exception) {
         var source = envelope.sourceAddress();
-        writer.println("Envelope from: {} (device: {})",
+        writer.println("Envelope from: {} (device: {}) to {}",
                 source.map(this::formatContact).orElse("unknown source"),
-                envelope.sourceDevice());
+                envelope.sourceDevice(),
+                m.getSelfIdentifier());
         writer.println("Timestamp: {}", DateUtils.formatTimestamp(envelope.timestamp()));
         writer.println("Server timestamps: received: {} delivered: {}",
                 DateUtils.formatTimestamp(envelope.serverReceivedTimestamp()),
@@ -51,13 +55,13 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
                 final var recipientName = e.getSender().getLegacyIdentifier();
                 writer.println(
                         "Use 'signal-cli -a {} listIdentities -n {}', verify the key and run 'signal-cli -a {} trust -v \"FINGER_PRINT\" {}' to mark it as trusted",
-                        m.getSelfNumber(),
+                        m.getSelfIdentifier(),
                         recipientName,
-                        m.getSelfNumber(),
+                        m.getSelfIdentifier(),
                         recipientName);
                 writer.println(
                         "If you don't care about security, use 'signal-cli -a {} trust -a {}' to trust it without verification",
-                        m.getSelfNumber(),
+                        m.getSelfIdentifier(),
                         recipientName);
             } else {
                 writer.println("Exception: {} ({})", exception.getMessage(), exception.getClass().getSimpleName());
@@ -67,6 +71,14 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         if (envelope.data().isPresent()) {
             var message = envelope.data().get();
             printDataMessage(writer, message);
+        }
+        if (envelope.edit().isPresent()) {
+            var message = envelope.edit().get();
+            printEditMessage(writer, message);
+        }
+        if (envelope.story().isPresent()) {
+            var message = envelope.story().get();
+            printStoryMessage(writer.indentedWriter(), message);
         }
         if (envelope.sync().isPresent()) {
             writer.println("Received a sync message");
@@ -91,9 +103,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         writer.println();
     }
 
-    private void printDataMessage(
-            PlainTextWriter writer, MessageEnvelope.Data message
-    ) {
+    private void printDataMessage(PlainTextWriter writer, MessageEnvelope.Data message) {
         writer.println("Message timestamp: {}", DateUtils.formatTimestamp(message.timestamp()));
         if (message.isViewOnce()) {
             writer.println("=VIEW ONCE=");
@@ -107,12 +117,17 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             final var groupContext = message.groupContext().get();
             printGroupContext(writer.indentedWriter(), groupContext);
         }
+        if (message.storyContext().isPresent()) {
+            writer.println("Story reply:");
+            final var storyContext = message.storyContext().get();
+            printStoryContext(writer.indentedWriter(), storyContext);
+        }
         if (message.groupCallUpdate().isPresent()) {
             writer.println("Group call update:");
             final var groupCallUpdate = message.groupCallUpdate().get();
             writer.indentedWriter().println("Era id: {}", groupCallUpdate.eraId());
         }
-        if (message.previews().size() > 0) {
+        if (!message.previews().isEmpty()) {
             writer.println("Previews:");
             final var previews = message.previews();
             for (var preview : previews) {
@@ -120,7 +135,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
                 printPreview(writer.indentedWriter(), preview);
             }
         }
-        if (message.sharedContacts().size() > 0) {
+        if (!message.sharedContacts().isEmpty()) {
             writer.println("Contacts:");
             for (var contact : message.sharedContacts()) {
                 writer.println("- Contact:");
@@ -141,8 +156,11 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         if (message.expiresInSeconds() > 0) {
             writer.println("Expires in: {} seconds", message.expiresInSeconds());
         }
-        if (message.hasProfileKey()) {
+        if (message.isProfileKeyUpdate()) {
             writer.println("Profile key update");
+        }
+        if (message.hasProfileKey()) {
+            writer.println("With profile key");
         }
         if (message.reaction().isPresent()) {
             writer.println("Reaction:");
@@ -158,24 +176,89 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             final var remoteDelete = message.remoteDeleteId().get();
             writer.println("Remote delete message: timestamp = {}", remoteDelete);
         }
-        if (message.mentions().size() > 0) {
+        if (!message.mentions().isEmpty()) {
             writer.println("Mentions:");
             for (var mention : message.mentions()) {
                 printMention(writer, mention);
             }
         }
-        if (message.attachments().size() > 0) {
+        if (!message.textStyles().isEmpty()) {
+            writer.println("Text styles:");
+            for (var textStyle : message.textStyles()) {
+                printTextStyle(writer, textStyle);
+            }
+        }
+        if (!message.attachments().isEmpty()) {
             writer.println("Attachments:");
             for (var attachment : message.attachments()) {
                 writer.println("- Attachment:");
                 printAttachment(writer.indentedWriter(), attachment);
             }
         }
+        if (!message.pollCreate().isEmpty()) {
+            final var pollCreate = message.pollCreate().get();
+            writer.println("Poll Create: \"{}\" ({})",
+                    pollCreate.question(),
+                    pollCreate.allowMultiple() ? "multi" : "single");
+            for (final var option : pollCreate.options()) {
+                writer.println("- {}", option);
+            }
+        }
+        if (!message.pollVote().isEmpty()) {
+            final var pollVote = message.pollVote().get();
+            writer.println("Poll Vote: \"{}\" ({}) selected {} (vote #{})",
+                    formatContact(pollVote.targetAuthor()),
+                    DateUtils.formatTimestamp(pollVote.targetSentTimestamp()),
+                    pollVote.optionIndexes().stream().map(Object::toString).collect(Collectors.joining(",")),
+                    pollVote.voteCount());
+        }
+        if (!message.pollTerminate().isEmpty()) {
+            final var pollTerminate = message.pollTerminate().get();
+            writer.println("Poll Terminate: {}", DateUtils.formatTimestamp(pollTerminate.targetSentTimestamp()));
+        }
+        if (message.pinMessage().isPresent()) {
+            writer.println("Pin Message:");
+            final var pinMessage = message.pinMessage().get();
+            printPinMessage(writer.indentedWriter(), pinMessage);
+        }
+        if (message.unpinMessage().isPresent()) {
+            writer.println("Unpin Message:");
+            final var unpinMessage = message.unpinMessage().get();
+            printUnpinMessage(writer.indentedWriter(), unpinMessage);
+        }
+        if (message.adminDelete().isPresent()) {
+            writer.println("Admin Delete:");
+            final var adminDelete = message.adminDelete().get();
+            printAdminDelete(writer.indentedWriter(), adminDelete);
+        }
     }
 
-    private void printTypingMessage(
-            final PlainTextWriter writer, final MessageEnvelope.Typing typingMessage
-    ) {
+    private void printEditMessage(PlainTextWriter writer, MessageEnvelope.Edit message) {
+        writer.println("Edit: Target message timestamp: {}", DateUtils.formatTimestamp(message.targetSentTimestamp()));
+        printDataMessage(writer.indentedWriter(), message.dataMessage());
+    }
+
+    private void printStoryMessage(PlainTextWriter writer, MessageEnvelope.Story message) {
+        writer.println("Story: with replies: {}", message.allowsReplies());
+        if (message.groupId().isPresent()) {
+            writer.println("Group info:");
+            printGroupInfo(writer.indentedWriter(), message.groupId().get());
+        }
+        if (message.textAttachment().isPresent()) {
+            writer.println("Body: {}", message.textAttachment().get().text().orElse(""));
+
+            if (message.textAttachment().get().preview().isPresent()) {
+                writer.println("Preview:");
+                printPreview(writer.indentedWriter(), message.textAttachment().get().preview().get());
+            }
+        }
+        if (message.fileAttachment().isPresent()) {
+            writer.println("Attachments:");
+            printAttachment(writer.indentedWriter(), message.fileAttachment().get());
+        }
+    }
+
+    private void printTypingMessage(final PlainTextWriter writer, final MessageEnvelope.Typing typingMessage) {
         writer.println("Action: {}", typingMessage.type());
         writer.println("Timestamp: {}", DateUtils.formatTimestamp(typingMessage.timestamp()));
         if (typingMessage.groupId().isPresent()) {
@@ -185,9 +268,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printReceiptMessage(
-            final PlainTextWriter writer, final MessageEnvelope.Receipt receiptMessage
-    ) {
+    private void printReceiptMessage(final PlainTextWriter writer, final MessageEnvelope.Receipt receiptMessage) {
         writer.println("When: {}", DateUtils.formatTimestamp(receiptMessage.when()));
         if (receiptMessage.type() == MessageEnvelope.Receipt.Type.DELIVERY) {
             writer.println("Is delivery receipt");
@@ -204,9 +285,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printCallMessage(
-            final PlainTextWriter writer, final MessageEnvelope.Call callMessage
-    ) {
+    private void printCallMessage(final PlainTextWriter writer, final MessageEnvelope.Call callMessage) {
         if (callMessage.destinationDeviceId().isPresent()) {
             final var deviceId = callMessage.destinationDeviceId().get();
             writer.println("Destination device id: {}", deviceId);
@@ -220,26 +299,34 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
         if (callMessage.answer().isPresent()) {
             var answerMessage = callMessage.answer().get();
-            writer.println("Answer message: {}, sdp: {})", answerMessage.id(), answerMessage.sdp());
+            writer.println("Answer message: {}, opaque length: {})",
+                    callIdUnsigned(answerMessage.id()),
+                    answerMessage.opaque().length);
         }
         if (callMessage.busy().isPresent()) {
             var busyMessage = callMessage.busy().get();
-            writer.println("Busy message: {}", busyMessage.id());
+            writer.println("Busy message: {}", callIdUnsigned(busyMessage.id()));
         }
         if (callMessage.hangup().isPresent()) {
             var hangupMessage = callMessage.hangup().get();
-            writer.println("Hangup message: {}", hangupMessage.id());
+            writer.println("Hangup message: {}", callIdUnsigned(hangupMessage.id()));
+            writer.println("- type: {}", hangupMessage.type());
+            writer.println("- device id: {}", hangupMessage.deviceId());
         }
-        if (callMessage.iceUpdate().size() > 0) {
+        if (!callMessage.iceUpdate().isEmpty()) {
             writer.println("Ice update messages:");
             var iceUpdateMessages = callMessage.iceUpdate();
             for (var iceUpdateMessage : iceUpdateMessages) {
-                writer.println("- {}, sdp: {}", iceUpdateMessage.id(), iceUpdateMessage.sdp());
+                writer.println("- {}, opaque length: {}",
+                        callIdUnsigned(iceUpdateMessage.id()),
+                        iceUpdateMessage.opaque().length);
             }
         }
         if (callMessage.offer().isPresent()) {
             var offerMessage = callMessage.offer().get();
-            writer.println("Offer message: {}, sdp: {}", offerMessage.id(), offerMessage.sdp());
+            writer.println("Offer message: {}, opaque length: {}",
+                    callIdUnsigned(offerMessage.id()),
+                    offerMessage.opaque().length);
         }
         if (callMessage.opaque().isPresent()) {
             final var opaqueMessage = callMessage.opaque().get();
@@ -249,9 +336,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printSyncMessage(
-            final PlainTextWriter writer, final MessageEnvelope.Sync syncMessage
-    ) {
+    private void printSyncMessage(final PlainTextWriter writer, final MessageEnvelope.Sync syncMessage) {
         if (syncMessage.contacts().isPresent()) {
             final var contactsMessage = syncMessage.contacts().get();
             var type = contactsMessage.isComplete() ? "complete" : "partial";
@@ -260,7 +345,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         if (syncMessage.groups().isPresent()) {
             writer.println("Received sync groups.");
         }
-        if (syncMessage.read().size() > 0) {
+        if (!syncMessage.read().isEmpty()) {
             writer.println("Received sync read messages list");
             for (var rm : syncMessage.read()) {
                 writer.println("- From: {} Message timestamp: {}",
@@ -268,7 +353,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
                         DateUtils.formatTimestamp(rm.timestamp()));
             }
         }
-        if (syncMessage.viewed().size() > 0) {
+        if (!syncMessage.viewed().isEmpty()) {
             writer.println("Received sync viewed messages list");
             for (var vm : syncMessage.viewed()) {
                 writer.println("- From: {} Message timestamp: {}",
@@ -282,7 +367,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             String to;
             if (sentTranscriptMessage.destination().isPresent()) {
                 to = formatContact(sentTranscriptMessage.destination().get());
-            } else if (sentTranscriptMessage.recipients().size() > 0) {
+            } else if (!sentTranscriptMessage.recipients().isEmpty()) {
                 to = sentTranscriptMessage.recipients()
                         .stream()
                         .map(this::formatContact)
@@ -298,8 +383,14 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
                         .println("Expiration started at: {}",
                                 DateUtils.formatTimestamp(sentTranscriptMessage.expirationStartTimestamp()));
             }
-            var message = sentTranscriptMessage.message();
-            printDataMessage(writer.indentedWriter(), message);
+            if (sentTranscriptMessage.message().isPresent()) {
+                var message = sentTranscriptMessage.message().get();
+                printDataMessage(writer.indentedWriter(), message);
+            }
+            if (sentTranscriptMessage.story().isPresent()) {
+                var message = sentTranscriptMessage.story().get();
+                printStoryMessage(writer.indentedWriter(), message);
+            }
         }
         if (syncMessage.blocked().isPresent()) {
             writer.println("Received sync message with block list");
@@ -309,7 +400,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
                 writer.println("- {}", address.getLegacyIdentifier());
             }
             for (var groupId : blockedList.groupIds()) {
-                writer.println("- {}", groupId);
+                writer.println("- {}", groupId.toBase64());
             }
         }
         if (syncMessage.viewOnceOpen().isPresent()) {
@@ -333,9 +424,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printPreview(
-            final PlainTextWriter writer, final MessageEnvelope.Data.Preview preview
-    ) {
+    private void printPreview(final PlainTextWriter writer, final MessageEnvelope.Data.Preview preview) {
         writer.println("Title: {}", preview.title());
         writer.println("Description: {}", preview.description());
         writer.println("Date: {}", DateUtils.formatTimestamp(preview.date()));
@@ -346,37 +435,31 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printSticker(
-            final PlainTextWriter writer, final MessageEnvelope.Data.Sticker sticker
-    ) {
+    private void printSticker(final PlainTextWriter writer, final MessageEnvelope.Data.Sticker sticker) {
         writer.println("Pack id: {}", Hex.toStringCondensed(sticker.packId().serialize()));
         writer.println("Sticker id: {}", sticker.stickerId());
     }
 
-    private void printReaction(
-            final PlainTextWriter writer, final MessageEnvelope.Data.Reaction reaction
-    ) {
+    private void printReaction(final PlainTextWriter writer, final MessageEnvelope.Data.Reaction reaction) {
         writer.println("Emoji: {}", reaction.emoji());
         writer.println("Target author: {}", formatContact(reaction.targetAuthor()));
         writer.println("Target timestamp: {}", DateUtils.formatTimestamp(reaction.targetSentTimestamp()));
         writer.println("Is remove: {}", reaction.isRemove());
     }
 
-    private void printQuote(
-            final PlainTextWriter writer, final MessageEnvelope.Data.Quote quote
-    ) {
+    private void printQuote(final PlainTextWriter writer, final MessageEnvelope.Data.Quote quote) {
         writer.println("Id: {}", quote.id());
         writer.println("Author: {}", formatContact(quote.author()));
         if (quote.text().isPresent()) {
             writer.println("Text: {}", quote.text().get());
         }
-        if (quote.mentions() != null && quote.mentions().size() > 0) {
+        if (quote.mentions() != null && !quote.mentions().isEmpty()) {
             writer.println("Mentions:");
             for (var mention : quote.mentions()) {
                 printMention(writer, mention);
             }
         }
-        if (quote.attachments().size() > 0) {
+        if (!quote.attachments().isEmpty()) {
             writer.println("Attachments:");
             for (var attachment : quote.attachments()) {
                 writer.println("- Attachment:");
@@ -389,9 +472,6 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         writer.println("Name:");
         var name = contact.name();
         writer.indent(w -> {
-            if (name.display().isPresent() && !name.display().get().isBlank()) {
-                w.println("Display name: {}", name.display().get());
-            }
             if (name.given().isPresent() && !name.given().get().isBlank()) {
                 w.println("First name: {}", name.given().get());
             }
@@ -407,6 +487,9 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             if (name.suffix().isPresent() && !name.suffix().get().isBlank()) {
                 w.println("Suffix name: {}", name.suffix().get());
             }
+            if (name.nickname().isPresent() && !name.nickname().get().isBlank()) {
+                w.println("Display name: {}", name.nickname().get());
+            }
         });
 
         if (contact.avatar().isPresent()) {
@@ -419,7 +502,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             writer.println("Organisation: {}", contact.organization().get());
         }
 
-        if (contact.phone().size() > 0) {
+        if (!contact.phone().isEmpty()) {
             writer.println("Phone details:");
             for (var phone : contact.phone()) {
                 writer.println("- Phone:");
@@ -433,7 +516,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             }
         }
 
-        if (contact.email().size() > 0) {
+        if (!contact.email().isEmpty()) {
             writer.println("Email details:");
             for (var email : contact.email()) {
                 writer.println("- Email:");
@@ -447,7 +530,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
             }
         }
 
-        if (contact.address().size() > 0) {
+        if (!contact.address().isEmpty()) {
             writer.println("Address details:");
             for (var address : contact.address()) {
                 writer.println("- Address:");
@@ -482,12 +565,15 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printGroupContext(
-            final PlainTextWriter writer, final MessageEnvelope.Data.GroupContext groupContext
-    ) {
+    private void printGroupContext(final PlainTextWriter writer, final MessageEnvelope.Data.GroupContext groupContext) {
         printGroupInfo(writer, groupContext.groupId());
         writer.println("Revision: {}", groupContext.revision());
         writer.println("Type: {}", groupContext.isGroupUpdate() ? "UPDATE" : "DELIVER");
+    }
+
+    private void printStoryContext(final PlainTextWriter writer, final MessageEnvelope.Data.StoryContext storyContext) {
+        writer.println("Sender: {}", formatContact(storyContext.author()));
+        writer.println("Sent timestamp: {}", storyContext.sentTimestamp());
     }
 
     private void printGroupInfo(final PlainTextWriter writer, final GroupId groupId) {
@@ -501,10 +587,12 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         }
     }
 
-    private void printMention(
-            PlainTextWriter writer, MessageEnvelope.Data.Mention mention
-    ) {
+    private void printMention(PlainTextWriter writer, MessageEnvelope.Data.Mention mention) {
         writer.println("- {}: {} (length: {})", formatContact(mention.recipient()), mention.start(), mention.length());
+    }
+
+    private void printTextStyle(PlainTextWriter writer, TextStyle textStyle) {
+        writer.println("- {}: {} (length: {})", textStyle.style().name(), textStyle.start(), textStyle.length());
     }
 
     private void printAttachment(PlainTextWriter writer, MessageEnvelope.Data.Attachment attachment) {
@@ -543,7 +631,7 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
         if (attachment.isGif()) {
             flags.add("video gif");
         }
-        if (flags.size() > 0) {
+        if (!flags.isEmpty()) {
             writer.println("Flags: {}", String.join(", ", flags));
         }
         if (attachment.width().isPresent() || attachment.height().isPresent()) {
@@ -555,6 +643,29 @@ public class ReceiveMessageHandler implements Manager.ReceiveMessageHandler {
                 writer.println("Stored plaintext in: {}", file);
             }
         }
+    }
+
+    private void printPinMessage(final PlainTextWriter writer, final MessageEnvelope.Data.PinMessage pinMessage) {
+        writer.println("Target author: {}", formatContact(pinMessage.targetAuthor()));
+        writer.println("Target timestamp: {}", DateUtils.formatTimestamp(pinMessage.targetSentTimestamp()));
+        final var duration = pinMessage.pinDurationSeconds();
+        if (duration == -1) {
+            writer.println("Duration: forever");
+        } else if (duration == 0) {
+            writer.println("Duration: unspecified");
+        } else {
+            writer.println("Duration: {} seconds", duration);
+        }
+    }
+
+    private void printUnpinMessage(final PlainTextWriter writer, final MessageEnvelope.Data.UnpinMessage unpinMessage) {
+        writer.println("Target author: {}", formatContact(unpinMessage.targetAuthor()));
+        writer.println("Target timestamp: {}", DateUtils.formatTimestamp(unpinMessage.targetSentTimestamp()));
+    }
+
+    private void printAdminDelete(final PlainTextWriter writer, final MessageEnvelope.Data.AdminDelete adminDelete) {
+        writer.println("Target author: {}", formatContact(adminDelete.targetAuthor()));
+        writer.println("Target timestamp: {}", DateUtils.formatTimestamp(adminDelete.targetSentTimestamp()));
     }
 
     private String formatContact(RecipientAddress address) {

@@ -10,12 +10,21 @@ public class Commands {
     private static final Map<String, SubparserAttacher> commandSubparserAttacher = new TreeMap<>();
 
     static {
+        addCommand(new AcceptCallCommand());
         addCommand(new AddDeviceCommand());
         addCommand(new BlockCommand());
         addCommand(new DaemonCommand());
+        addCommand(new DeleteLocalAccountDataCommand());
+        addCommand(new FinishChangeNumberCommand());
         addCommand(new FinishLinkCommand());
+        addCommand(new HangupCallCommand());
+        addCommand(new GetAttachmentCommand());
+        addCommand(new GetAvatarCommand());
+        addCommand(new GetStickerCommand());
         addCommand(new GetUserStatusCommand());
+        addCommand(new AddStickerPackCommand());
         addCommand(new JoinGroupCommand());
+        addCommand(new ListCallsCommand());
         addCommand(new JsonRpcDispatcherCommand());
         addCommand(new LinkCommand());
         addCommand(new ListAccountsCommand());
@@ -26,26 +35,40 @@ public class Commands {
         addCommand(new ListStickerPacksCommand());
         addCommand(new QuitGroupCommand());
         addCommand(new ReceiveCommand());
+        addCommand(new RejectCallCommand());
         addCommand(new RegisterCommand());
         addCommand(new RemoveContactCommand());
         addCommand(new RemoveDeviceCommand());
-        addCommand(new RemoteDeleteCommand());
         addCommand(new RemovePinCommand());
+        addCommand(new RemoteDeleteCommand());
+        addCommand(new SendAdminDeleteCommand());
         addCommand(new SendCommand());
         addCommand(new SendContactsCommand());
+        addCommand(new SendMessageRequestResponseCommand());
+        addCommand(new SendPaymentNotificationCommand());
+        addCommand(new SendPinMessageCommand());
+        addCommand(new SendPollCreateCommand());
+        addCommand(new SendPollVoteCommand());
+        addCommand(new SendPollTerminateCommand());
         addCommand(new SendReactionCommand());
         addCommand(new SendReceiptCommand());
+        addCommand(new SendStoryCommand());
         addCommand(new SendSyncRequestCommand());
         addCommand(new SendTypingCommand());
+        addCommand(new SendUnpinMessageCommand());
         addCommand(new SetPinCommand());
+        addCommand(new StartCallCommand());
         addCommand(new SubmitRateLimitChallengeCommand());
+        addCommand(new StartChangeNumberCommand());
         addCommand(new StartLinkCommand());
+        addCommand(new TerminateGroupCommand());
         addCommand(new TrustCommand());
         addCommand(new UnblockCommand());
         addCommand(new UnregisterCommand());
         addCommand(new UpdateAccountCommand());
         addCommand(new UpdateConfigurationCommand());
         addCommand(new UpdateContactCommand());
+        addCommand(new UpdateDeviceCommand());
         addCommand(new UpdateGroupCommand());
         addCommand(new UpdateProfileCommand());
         addCommand(new UploadStickerPackCommand());
@@ -66,8 +89,8 @@ public class Commands {
 
     private static void addCommand(Command command) {
         commands.put(command.getName(), command);
-        if (command instanceof CliCommand) {
-            commandSubparserAttacher.put(command.getName(), ((CliCommand) command)::attachToSubparser);
+        if (command instanceof CliCommand cliCommand) {
+            commandSubparserAttacher.put(command.getName(), cliCommand::attachToSubparser);
         }
     }
 }

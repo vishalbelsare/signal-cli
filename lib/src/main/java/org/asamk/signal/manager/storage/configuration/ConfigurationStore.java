@@ -1,106 +1,180 @@
 package org.asamk.signal.manager.storage.configuration;
 
 import org.asamk.signal.manager.api.PhoneNumberSharingMode;
+import org.asamk.signal.manager.storage.keyValue.KeyValueEntry;
+import org.asamk.signal.manager.storage.keyValue.KeyValueStore;
+import org.asamk.signal.manager.storage.recipients.RecipientStore;
+
+import java.sql.Connection;
+import java.sql.SQLException;
 
 public class ConfigurationStore {
 
-    private final Saver saver;
+    private final KeyValueStore keyValueStore;
+    private final RecipientStore recipientStore;
 
-    private Boolean readReceipts;
-    private Boolean unidentifiedDeliveryIndicators;
-    private Boolean typingIndicators;
-    private Boolean linkPreviews;
-    private Boolean phoneNumberUnlisted;
-    private PhoneNumberSharingMode phoneNumberSharingMode;
+    private final KeyValueEntry<Boolean> readReceipts = new KeyValueEntry<>("config-read-receipts", Boolean.class);
+    private final KeyValueEntry<Boolean> unidentifiedDeliveryIndicators = new KeyValueEntry<>(
+            "config-unidentified-delivery-indicators",
+            Boolean.class);
+    private final KeyValueEntry<Boolean> typingIndicators = new KeyValueEntry<>("config-typing-indicators",
+            Boolean.class);
+    private final KeyValueEntry<Boolean> linkPreviews = new KeyValueEntry<>("config-link-previews", Boolean.class);
+    private final KeyValueEntry<Boolean> phoneNumberUnlisted = new KeyValueEntry<>("config-phone-number-unlisted",
+            Boolean.class);
+    private final KeyValueEntry<PhoneNumberSharingMode> phoneNumberSharingMode = new KeyValueEntry<>(
+            "config-phone-number-sharing-mode",
+            PhoneNumberSharingMode.class);
+    private final KeyValueEntry<String> usernameLinkColor = new KeyValueEntry<>("username-link-color", String.class);
 
-    public ConfigurationStore(final Saver saver) {
-        this.saver = saver;
-    }
-
-    public static ConfigurationStore fromStorage(Storage storage, Saver saver) {
-        final var store = new ConfigurationStore(saver);
-        store.readReceipts = storage.readReceipts;
-        store.unidentifiedDeliveryIndicators = storage.unidentifiedDeliveryIndicators;
-        store.typingIndicators = storage.typingIndicators;
-        store.linkPreviews = storage.linkPreviews;
-        store.phoneNumberSharingMode = storage.phoneNumberSharingMode;
-        return store;
+    public ConfigurationStore(final KeyValueStore keyValueStore, RecipientStore recipientStore) {
+        this.keyValueStore = keyValueStore;
+        this.recipientStore = recipientStore;
     }
 
     public Boolean getReadReceipts() {
-        return readReceipts;
+        return keyValueStore.getEntry(readReceipts);
     }
 
-    public void setReadReceipts(final boolean readReceipts) {
-        this.readReceipts = readReceipts;
-        saver.save(toStorage());
+    public Boolean getReadReceipts(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, readReceipts);
+    }
+
+    public void setReadReceipts(final boolean value) {
+        if (keyValueStore.storeEntry(readReceipts, value)) {
+            recipientStore.rotateSelfStorageId();
+        }
+    }
+
+    public void setReadReceipts(final Connection connection, final boolean value) throws SQLException {
+        if (keyValueStore.storeEntry(connection, readReceipts, value)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
     }
 
     public Boolean getUnidentifiedDeliveryIndicators() {
-        return unidentifiedDeliveryIndicators;
+        return keyValueStore.getEntry(unidentifiedDeliveryIndicators);
     }
 
-    public void setUnidentifiedDeliveryIndicators(final boolean unidentifiedDeliveryIndicators) {
-        this.unidentifiedDeliveryIndicators = unidentifiedDeliveryIndicators;
-        saver.save(toStorage());
+    public Boolean getUnidentifiedDeliveryIndicators(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, unidentifiedDeliveryIndicators);
+    }
+
+    public void setUnidentifiedDeliveryIndicators(final boolean value) {
+        if (keyValueStore.storeEntry(unidentifiedDeliveryIndicators, value)) {
+            recipientStore.rotateSelfStorageId();
+        }
+    }
+
+    public void setUnidentifiedDeliveryIndicators(
+            final Connection connection,
+            final boolean value
+    ) throws SQLException {
+        if (keyValueStore.storeEntry(connection, unidentifiedDeliveryIndicators, value)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
     }
 
     public Boolean getTypingIndicators() {
-        return typingIndicators;
+        return keyValueStore.getEntry(typingIndicators);
     }
 
-    public void setTypingIndicators(final boolean typingIndicators) {
-        this.typingIndicators = typingIndicators;
-        saver.save(toStorage());
+    public Boolean getTypingIndicators(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, typingIndicators);
+    }
+
+    public void setTypingIndicators(final boolean value) {
+        if (keyValueStore.storeEntry(typingIndicators, value)) {
+            recipientStore.rotateSelfStorageId();
+        }
+    }
+
+    public void setTypingIndicators(final Connection connection, final boolean value) throws SQLException {
+        if (keyValueStore.storeEntry(connection, typingIndicators, value)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
     }
 
     public Boolean getLinkPreviews() {
-        return linkPreviews;
+        return keyValueStore.getEntry(linkPreviews);
     }
 
-    public void setLinkPreviews(final boolean linkPreviews) {
-        this.linkPreviews = linkPreviews;
-        saver.save(toStorage());
+    public Boolean getLinkPreviews(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, linkPreviews);
+    }
+
+    public void setLinkPreviews(final boolean value) {
+        if (keyValueStore.storeEntry(linkPreviews, value)) {
+            recipientStore.rotateSelfStorageId();
+        }
+    }
+
+    public void setLinkPreviews(final Connection connection, final boolean value) throws SQLException {
+        if (keyValueStore.storeEntry(connection, linkPreviews, value)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
     }
 
     public Boolean getPhoneNumberUnlisted() {
-        return phoneNumberUnlisted;
+        return keyValueStore.getEntry(phoneNumberUnlisted);
     }
 
-    public void setPhoneNumberUnlisted(final boolean phoneNumberUnlisted) {
-        this.phoneNumberUnlisted = phoneNumberUnlisted;
-        saver.save(toStorage());
+    public Boolean getPhoneNumberUnlisted(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, phoneNumberUnlisted);
+    }
+
+    public void setPhoneNumberUnlisted(final boolean value) {
+        if (keyValueStore.storeEntry(phoneNumberUnlisted, value)) {
+            recipientStore.rotateSelfStorageId();
+        }
+    }
+
+    public void setPhoneNumberUnlisted(final Connection connection, final boolean value) throws SQLException {
+        if (keyValueStore.storeEntry(connection, phoneNumberUnlisted, value)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
     }
 
     public PhoneNumberSharingMode getPhoneNumberSharingMode() {
-        return phoneNumberSharingMode;
+        return keyValueStore.getEntry(phoneNumberSharingMode);
     }
 
-    public void setPhoneNumberSharingMode(final PhoneNumberSharingMode phoneNumberSharingMode) {
-        this.phoneNumberSharingMode = phoneNumberSharingMode;
-        saver.save(toStorage());
+    public PhoneNumberSharingMode getPhoneNumberSharingMode(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, phoneNumberSharingMode);
     }
 
-    private Storage toStorage() {
-        return new Storage(readReceipts,
-                unidentifiedDeliveryIndicators,
-                typingIndicators,
-                linkPreviews,
-                phoneNumberUnlisted,
-                phoneNumberSharingMode);
+    public void setPhoneNumberSharingMode(final PhoneNumberSharingMode value) {
+        if (keyValueStore.storeEntry(phoneNumberSharingMode, value)) {
+            recipientStore.rotateSelfStorageId();
+        }
     }
 
-    public record Storage(
-            Boolean readReceipts,
-            Boolean unidentifiedDeliveryIndicators,
-            Boolean typingIndicators,
-            Boolean linkPreviews,
-            Boolean phoneNumberUnlisted,
-            PhoneNumberSharingMode phoneNumberSharingMode
-    ) {}
+    public void setPhoneNumberSharingMode(
+            final Connection connection,
+            final PhoneNumberSharingMode value
+    ) throws SQLException {
+        if (keyValueStore.storeEntry(connection, phoneNumberSharingMode, value)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
+    }
 
-    public interface Saver {
+    public String getUsernameLinkColor() {
+        return keyValueStore.getEntry(usernameLinkColor);
+    }
 
-        void save(Storage storage);
+    public String getUsernameLinkColor(final Connection connection) throws SQLException {
+        return keyValueStore.getEntry(connection, usernameLinkColor);
+    }
+
+    public void setUsernameLinkColor(final String color) {
+        if (keyValueStore.storeEntry(usernameLinkColor, color)) {
+            recipientStore.rotateSelfStorageId();
+        }
+    }
+
+    public void setUsernameLinkColor(final Connection connection, final String color) throws SQLException {
+        if (keyValueStore.storeEntry(connection, usernameLinkColor, color)) {
+            recipientStore.rotateSelfStorageId(connection);
+        }
     }
 }

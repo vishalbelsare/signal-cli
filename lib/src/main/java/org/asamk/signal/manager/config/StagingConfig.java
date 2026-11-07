@@ -1,86 +1,100 @@
 package org.asamk.signal.manager.config;
 
-import org.bouncycastle.util.encoders.Hex;
-import org.whispersystems.libsignal.InvalidKeyException;
-import org.whispersystems.libsignal.ecc.Curve;
-import org.whispersystems.libsignal.ecc.ECPublicKey;
-import org.whispersystems.libsignal.util.guava.Optional;
-import org.whispersystems.signalservice.api.push.TrustStore;
-import org.whispersystems.signalservice.internal.configuration.SignalCdnUrl;
-import org.whispersystems.signalservice.internal.configuration.SignalCdshUrl;
-import org.whispersystems.signalservice.internal.configuration.SignalContactDiscoveryUrl;
-import org.whispersystems.signalservice.internal.configuration.SignalKeyBackupServiceUrl;
-import org.whispersystems.signalservice.internal.configuration.SignalProxy;
-import org.whispersystems.signalservice.internal.configuration.SignalServiceConfiguration;
-import org.whispersystems.signalservice.internal.configuration.SignalServiceUrl;
-import org.whispersystems.signalservice.internal.configuration.SignalStorageUrl;
+import org.signal.libsignal.net.Network;
+import org.signal.libsignal.protocol.InvalidKeyException;
+import org.signal.libsignal.protocol.ecc.ECPublicKey;
+import org.signal.network.config.SignalCdnUrl;
+import org.signal.network.config.SignalCdsiUrl;
+import org.signal.network.config.SignalProxy;
+import org.signal.network.config.SignalServiceConfiguration;
+import org.signal.network.config.SignalServiceUrl;
+import org.signal.network.config.SignalStorageUrl;
+import org.signal.network.config.SignalSvr2Url;
+import org.signal.network.config.TrustStore;
 
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import okhttp3.Dns;
 import okhttp3.Interceptor;
 
+import static org.asamk.signal.manager.api.ServiceEnvironment.STAGING;
+
 class StagingConfig {
 
-    private final static byte[] UNIDENTIFIED_SENDER_TRUST_ROOT = Base64.getDecoder()
+    private static final byte[] UNIDENTIFIED_SENDER_TRUST_ROOT = Base64.getDecoder()
             .decode("BbqY1DzohE4NUZoVF+L18oUPrK3kILllLEJh2UnPSsEx");
-    private final static String CDS_MRENCLAVE = "c98e00a4e3ff977a56afefe7362a27e4961e4f19e211febfbb19b897e6b80b15";
+    private static final byte[] UNIDENTIFIED_SENDER_TRUST_ROOT2 = Base64.getDecoder()
+            .decode("BYhU6tPjqP46KGZEzRs1OL4U39V5dlPJ/X09ha4rErkm");
+    private static final String CDSI_MRENCLAVE = "0f6fd79cdfdaa5b2e6337f534d3baf999318b0c462a7ac1f41297a3e4b424a57";
+    private static final String SVR2_MRENCLAVE = "0ff2d7d4efbe7cfc24ac069a16fba898928dbe6c40d500c8b6da55733c727d6e";
+    private static final String SVR2_MRENCLAVE_LEGACY = "3c699f4975aaa3d172c0aad042f94f031b2b03e10b9c19a45116a01693d83302";
 
-    private final static String KEY_BACKUP_ENCLAVE_NAME = "823a3b2c037ff0cbe305cc48928cfcc97c9ed4a8ca6d49af6f7d6981fb60a4e9";
-    private final static byte[] KEY_BACKUP_SERVICE_ID = Hex.decode(
-            "16b94ac6d2b7f7b9d72928f36d798dbb35ed32e7bb14c42b4301ad0344b46f29");
-    private final static String KEY_BACKUP_MRENCLAVE = "a3baab19ef6ce6f34ab9ebb25ba722725ae44a8872dc0ff08ad6d83a9489de87";
+    private static final String URL = "https://chat.staging.signal.org";
+    private static final String CDN_URL = "https://cdn-staging.signal.org";
+    private static final String CDN2_URL = "https://cdn2-staging.signal.org";
+    private static final String CDN3_URL = "https://cdn3-staging.signal.org";
+    private static final String STORAGE_URL = "https://storage-staging.signal.org";
+    private static final String SIGNAL_CDSI_URL = "https://cdsi.staging.signal.org";
+    private static final String SIGNAL_SVR2_URL = "https://svr2.staging.signal.org";
+    private static final TrustStore TRUST_STORE = new WhisperTrustStore();
 
-    private final static String URL = "https://chat.staging.signal.org";
-    private final static String CDN_URL = "https://cdn-staging.signal.org";
-    private final static String CDN2_URL = "https://cdn2-staging.signal.org";
-    private final static String SIGNAL_CONTACT_DISCOVERY_URL = "https://api-staging.directory.signal.org";
-    private final static String SIGNAL_KEY_BACKUP_URL = "https://api-staging.backup.signal.org";
-    private final static String STORAGE_URL = "https://storage-staging.signal.org";
-    private final static String SIGNAL_CDSH_URL = "https://cdsh.staging.signal.org";
-    private final static TrustStore TRUST_STORE = new WhisperTrustStore();
+    private static final Optional<Dns> dns = Optional.empty();
 
-    private final static Optional<Dns> dns = Optional.absent();
-    private final static Optional<SignalProxy> proxy = Optional.absent();
+    private static final byte[] zkGroupServerPublicParams = Base64.getDecoder()
+            .decode("ABSY21VckQcbSXVNCGRYJcfWHiAMZmpTtTELcDmxgdFbtp/bWsSxZdMKzfCp8rvIs8ocCU3B37fT3r4Mi5qAemeGeR2X+/YmOGR5ofui7tD5mDQfstAI9i+4WpMtIe8KC3wU5w3Inq3uNWVmoGtpKndsNfwJrCg0Hd9zmObhypUnSkfYn2ooMOOnBpfdanRtrvetZUayDMSC5iSRcXKpdlukrpzzsCIvEwjwQlJYVPOQPj4V0F4UXXBdHSLK05uoPBCQG8G9rYIGedYsClJXnbrgGYG3eMTG5hnx4X4ntARBgELuMWWUEEfSK0mjXg+/2lPmWcTZWR9nkqgQQP0tbzuiPm74H2wMO4u1Wafe+UwyIlIT9L7KLS19Aw8r4sPrXZSSsOZ6s7M1+rTJN0bI5CKY2PX29y5Ok3jSWufIKcgKOnWoP67d5b2du2ZVJjpjfibNIHbT/cegy/sBLoFwtHogVYUewANUAXIaMPyCLRArsKhfJ5wBtTminG/PAvuBdJ70Z/bXVPf8TVsR292zQ65xwvWTejROW6AZX6aqucUjlENAErBme1YHmOSpU6tr6doJ66dPzVAWIanmO/5mgjNEDeK7DDqQdB1xd03HT2Qs2TxY3kCK8aAb/0iM0HQiXjxZ9HIgYhbtvGEnDKW5ILSUydqH/KBhW4Pb0jZWnqN/YgbWDKeJxnDbYcUob5ZY5Lt5ZCMKuaGUvCJRrCtuugSMaqjowCGRempsDdJEt+cMaalhZ6gczklJB/IbdwENW9KeVFPoFNFzhxWUIS5ML9riVYhAtE6JE5jX0xiHNVIIPthb458cfA8daR0nYfYAUKogQArm0iBezOO+mPk5vCNWI+wwkyFCqNDXz/qxl1gAntuCJtSfq9OC3NkdhQlgYQ==");
+    private static final byte[] genericServerPublicParams = Base64.getDecoder()
+            .decode("AYhaw+NbxtNLo/RlGFEsHd904hW38LpPJ59jYJlNmT4wwtyOq4xzCs/MyXsfRbIsAYhQjDnpE0rhFtWkMcn/kV740SISwFfpPHunrtZ9h0YWz5QNNbI5I3DRGUjhKXgMU7J7s7qOr0fdms+g0e+L9FMSjJLobDkOngp/m0B5TsxTyqLscJ5VyU69Cj8txImTfHMCKrYphYfRHO78RwPoz2g2tGUAzEbKHm12OgDna2qutkE5TvYqwZczvgZyLVHdHXpvdyOlEdv4afVyWkI7u/S0XYDonIJoHlxqJoTSepZR");
 
-    private final static byte[] zkGroupServerPublicParams = Base64.getDecoder()
-            .decode("ABSY21VckQcbSXVNCGRYJcfWHiAMZmpTtTELcDmxgdFbtp/bWsSxZdMKzfCp8rvIs8ocCU3B37fT3r4Mi5qAemeGeR2X+/YmOGR5ofui7tD5mDQfstAI9i+4WpMtIe8KC3wU5w3Inq3uNWVmoGtpKndsNfwJrCg0Hd9zmObhypUnSkfYn2ooMOOnBpfdanRtrvetZUayDMSC5iSRcXKpdlukrpzzsCIvEwjwQlJYVPOQPj4V0F4UXXBdHSLK05uoPBCQG8G9rYIGedYsClJXnbrgGYG3eMTG5hnx4X4ntARBgELuMWWUEEfSK0mjXg+/2lPmWcTZWR9nkqgQQP0tbzuiPm74H2wMO4u1Wafe+UwyIlIT9L7KLS19Aw8r4sPrXQ==");
+    private static final byte[] backupServerPublicParams = Base64.getDecoder()
+            .decode("AXYrGb9IfugAAJiPKp+mdXUx+OL9zBolPYHYQz6GI1gWjpEu5me3zVNSvmYY4zWboZHif+HG1sDHSuvwFd0QszS6h3nZ6vRdM/IYGK+cLynw3ucWo7idf3zjOG3b6JnGT/z7XYCr6HuOGkWH4DQWCH98hxVZMGOgmT8DCQoqebQb3oK1yrwEglRWmtI01KhRg9RGUKoQiwuej1JZEY8uaG4Uz9n1cVODJ1iuByhNqGHo+KfI4iWhjtx2AnhYqHViQ3CMd4ASGBJtic9UTFVk/4vegVIy0wfYsAmViftzK6t4");
+
+    private static final Network.Environment LIBSIGNAL_NET_ENV = Network.Environment.STAGING;
 
     static SignalServiceConfiguration createDefaultServiceConfiguration(
-            final List<Interceptor> interceptors
+            final List<Interceptor> interceptors,
+            final Optional<SignalProxy> proxy
     ) {
         return new SignalServiceConfiguration(new SignalServiceUrl[]{new SignalServiceUrl(URL, TRUST_STORE)},
                 Map.of(0,
                         new SignalCdnUrl[]{new SignalCdnUrl(CDN_URL, TRUST_STORE)},
                         2,
-                        new SignalCdnUrl[]{new SignalCdnUrl(CDN2_URL, TRUST_STORE)}),
-                new SignalContactDiscoveryUrl[]{new SignalContactDiscoveryUrl(SIGNAL_CONTACT_DISCOVERY_URL,
-                        TRUST_STORE)},
-                new SignalKeyBackupServiceUrl[]{new SignalKeyBackupServiceUrl(SIGNAL_KEY_BACKUP_URL, TRUST_STORE)},
+                        new SignalCdnUrl[]{new SignalCdnUrl(CDN2_URL, TRUST_STORE)},
+                        3,
+                        new SignalCdnUrl[]{new SignalCdnUrl(CDN3_URL, TRUST_STORE)}),
                 new SignalStorageUrl[]{new SignalStorageUrl(STORAGE_URL, TRUST_STORE)},
-                new SignalCdshUrl[]{new SignalCdshUrl(SIGNAL_CDSH_URL, TRUST_STORE)},
+                new SignalCdsiUrl[]{new SignalCdsiUrl(SIGNAL_CDSI_URL, TRUST_STORE)},
+                new SignalSvr2Url[]{new SignalSvr2Url(SIGNAL_SVR2_URL, TRUST_STORE, null, null)},
                 interceptors,
-                dns,
+                proxy.map(ServiceConfig::dnsBehindTlsProxy).or(() -> dns),
                 proxy,
-                zkGroupServerPublicParams);
+                zkGroupServerPublicParams,
+                genericServerPublicParams,
+                backupServerPublicParams,
+                false);
     }
 
-    static ECPublicKey getUnidentifiedSenderTrustRoot() {
+    static List<ECPublicKey> getUnidentifiedSenderTrustRoots() {
         try {
-            return Curve.decodePoint(UNIDENTIFIED_SENDER_TRUST_ROOT, 0);
+            return List.of(new ECPublicKey(UNIDENTIFIED_SENDER_TRUST_ROOT),
+                    new ECPublicKey(UNIDENTIFIED_SENDER_TRUST_ROOT2));
         } catch (InvalidKeyException e) {
             throw new AssertionError(e);
         }
     }
 
-    static KeyBackupConfig createKeyBackupConfig() {
-        return new KeyBackupConfig(KEY_BACKUP_ENCLAVE_NAME, KEY_BACKUP_SERVICE_ID, KEY_BACKUP_MRENCLAVE);
-    }
-
-    static String getCdsMrenclave() {
-        return CDS_MRENCLAVE;
+    static ServiceEnvironmentConfig getServiceEnvironmentConfig(
+            List<Interceptor> interceptors,
+            Optional<SignalProxy> proxy
+    ) {
+        return new ServiceEnvironmentConfig(STAGING,
+                LIBSIGNAL_NET_ENV,
+                createDefaultServiceConfiguration(interceptors, proxy),
+                getUnidentifiedSenderTrustRoots(),
+                CDSI_MRENCLAVE,
+                List.of(SVR2_MRENCLAVE, SVR2_MRENCLAVE_LEGACY));
     }
 
     private StagingConfig() {

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import org.asamk.signal.manager.storage.recipients.RecipientAddress;
+import org.signal.core.models.ServiceId.ACI;
 
 import java.util.UUID;
 
@@ -43,6 +44,6 @@ public class LegacyContactInfo {
 
     @JsonIgnore
     public RecipientAddress getAddress() {
-        return new RecipientAddress(uuid, number);
+        return new RecipientAddress(uuid == null ? null : ACI.from(uuid), number);
     }
 }

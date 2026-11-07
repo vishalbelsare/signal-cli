@@ -7,6 +7,7 @@ import org.freedesktop.dbus.types.Variant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 public abstract class DbusProperties implements Properties {
@@ -25,7 +26,7 @@ public abstract class DbusProperties implements Properties {
         return handler.get();
     }
 
-    private java.util.Optional<DbusInterfacePropertiesHandler> getHandlerOptional(final String interfaceName) {
+    private Optional<DbusInterfacePropertiesHandler> getHandlerOptional(final String interfaceName) {
         return handlers.stream().filter(h -> h.getInterfaceName().equals(interfaceName)).findFirst();
     }
 
@@ -51,7 +52,6 @@ public abstract class DbusProperties implements Properties {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Map<String, Variant<?>> GetAll(final String interface_name) {
         final var handler = getHandlerOptional(interface_name);
         if (handler.isEmpty()) {
@@ -64,7 +64,7 @@ public abstract class DbusProperties implements Properties {
                 .filter(p -> p.getGetter() != null)
                 .collect(Collectors.toMap(DbusProperty::getName, p -> {
                     final Object o = p.getGetter().get();
-                    return o instanceof Variant ? (Variant<Object>) o : new Variant<>(o);
+                    return o instanceof Variant<?> variant ? variant : new Variant<>(o);
                 }));
     }
 }

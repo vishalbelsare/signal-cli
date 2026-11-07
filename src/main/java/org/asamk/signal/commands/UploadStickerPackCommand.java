@@ -7,7 +7,7 @@ import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.commands.exceptions.IOErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.manager.Manager;
-import org.asamk.signal.manager.StickerPackInvalidException;
+import org.asamk.signal.manager.api.StickerPackInvalidException;
 import org.asamk.signal.output.JsonWriter;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.output.PlainTextWriter;
@@ -20,7 +20,7 @@ import java.util.Map;
 
 public class UploadStickerPackCommand implements JsonRpcLocalCommand {
 
-    private final static Logger logger = LoggerFactory.getLogger(UploadStickerPackCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(UploadStickerPackCommand.class);
 
     @Override
     public String getName() {
@@ -36,17 +36,19 @@ public class UploadStickerPackCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         var path = new File(ns.getString("path"));
 
         try {
             var url = m.uploadStickerPack(path);
-            if (outputWriter instanceof PlainTextWriter writer) {
-                writer.println("{}", url.getUrl());
-            } else {
-                final var writer = (JsonWriter) outputWriter;
-                writer.write(Map.of("url", url.getUrl()));
+            switch (outputWriter) {
+                case PlainTextWriter writer -> writer.println("{}", url.getUrl());
+                case JsonWriter writer -> {
+                    writer.write(Map.of("url", url.getUrl()));
+                }
             }
         } catch (IOException e) {
             throw new IOErrorException("Upload error (maybe image size too large):" + e.getMessage(), e);

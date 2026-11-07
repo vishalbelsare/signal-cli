@@ -14,7 +14,7 @@ import java.util.concurrent.TimeoutException;
 
 public class StartLinkCommand implements JsonRpcMultiCommand<Void> {
 
-    private final static Logger logger = LoggerFactory.getLogger(StartLinkCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(StartLinkCommand.class);
 
     @Override
     public String getName() {
@@ -23,7 +23,9 @@ public class StartLinkCommand implements JsonRpcMultiCommand<Void> {
 
     @Override
     public void handleCommand(
-            final Void request, final MultiAccountManager m, final JsonWriter jsonWriter
+            final Void request,
+            final MultiAccountManager m,
+            final JsonWriter jsonWriter
     ) throws CommandException {
         final URI deviceLinkUri;
         try {

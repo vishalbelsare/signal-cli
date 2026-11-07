@@ -7,11 +7,17 @@ import org.asamk.signal.manager.Manager;
 import org.asamk.signal.manager.MultiAccountManager;
 import org.asamk.signal.manager.ProvisioningManager;
 import org.asamk.signal.manager.RegistrationManager;
-import org.asamk.signal.manager.UserAlreadyExists;
 import org.asamk.signal.manager.api.CaptchaRequiredException;
 import org.asamk.signal.manager.api.IncorrectPinException;
+import org.asamk.signal.manager.api.NonNormalizedPhoneNumberException;
+import org.asamk.signal.manager.api.PinLockMissingException;
 import org.asamk.signal.manager.api.PinLockedException;
+import org.asamk.signal.manager.api.RateLimitException;
+import org.asamk.signal.manager.api.UserAlreadyExistsException;
+import org.asamk.signal.manager.api.VerificationMethodNotAvailableException;
 import org.freedesktop.dbus.DBusPath;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -22,6 +28,7 @@ import java.util.concurrent.TimeoutException;
 
 public class DbusSignalControlImpl implements org.asamk.SignalControl {
 
+    private static final Logger logger = LoggerFactory.getLogger(DbusSignalControlImpl.class);
     private final MultiAccountManager c;
 
     private final String objectPath;
@@ -43,27 +50,35 @@ public class DbusSignalControlImpl implements org.asamk.SignalControl {
 
     @Override
     public void register(
-            final String number, final boolean voiceVerification
+            final String number,
+            final boolean voiceVerification
     ) throws Error.Failure, Error.InvalidNumber {
         registerWithCaptcha(number, voiceVerification, null);
     }
 
     @Override
     public void registerWithCaptcha(
-            final String number, final boolean voiceVerification, final String captcha
+            final String number,
+            final boolean voiceVerification,
+            final String captcha
     ) throws Error.Failure, Error.InvalidNumber {
         if (!Manager.isValidNumber(number, null)) {
             throw new SignalControl.Error.InvalidNumber(
                     "Invalid account (phone number), make sure you include the country code.");
         }
         try (final RegistrationManager registrationManager = c.getNewRegistrationManager(number)) {
-            registrationManager.register(voiceVerification, captcha);
+            registrationManager.register(voiceVerification, captcha, false);
+        } catch (RateLimitException e) {
+            String message = "Rate limit reached";
+            throw new SignalControl.Error.Failure(message);
         } catch (CaptchaRequiredException e) {
             String message = captcha == null ? "Captcha required for verification." : "Invalid captcha given.";
             throw new SignalControl.Error.RequiresCaptcha(message);
+        } catch (NonNormalizedPhoneNumberException e) {
+            throw new Error.InvalidNumber(e.getMessage());
         } catch (OverlappingFileLockException e) {
             throw new SignalControl.Error.Failure("Account is already in use");
-        } catch (IOException e) {
+        } catch (IOException | VerificationMethodNotAvailableException e) {
             throw new SignalControl.Error.Failure(e.getClass().getSimpleName() + " " + e.getMessage());
         }
     }
@@ -75,7 +90,9 @@ public class DbusSignalControlImpl implements org.asamk.SignalControl {
 
     @Override
     public void verifyWithPin(
-            final String number, final String verificationCode, final String pin
+            final String number,
+            final String verificationCode,
+            final String pin
     ) throws Error.Failure, Error.InvalidNumber {
         try (final RegistrationManager registrationManager = c.getNewRegistrationManager(number)) {
             registrationManager.verifyAccount(verificationCode, pin);
@@ -89,27 +106,28 @@ public class DbusSignalControlImpl implements org.asamk.SignalControl {
                             + (e.getTimeRemaining() / 1000 / 60 / 60));
         } catch (IncorrectPinException e) {
             throw new Error.Failure("Verification failed! Invalid pin, tries remaining: " + e.getTriesRemaining());
+        } catch (PinLockMissingException e) {
+            throw new Error.Failure("Account is pin locked, but pin data has been deleted on the server.");
         }
     }
 
     @Override
     public String link(final String newDeviceName) throws Error.Failure {
+        final URI deviceLinkUri;
         try {
-            final URI deviceLinkUri = c.getNewProvisioningDeviceLinkUri();
-            final var thread = new Thread(() -> {
-                final ProvisioningManager provisioningManager = c.getProvisioningManagerFor(deviceLinkUri);
-                try {
-                    provisioningManager.finishDeviceLink(newDeviceName);
-                } catch (IOException | TimeoutException | UserAlreadyExists e) {
-                    e.printStackTrace();
-                }
-            });
-            thread.setName("dbus-link");
-            thread.start();
-            return deviceLinkUri.toString();
+            deviceLinkUri = c.getNewProvisioningDeviceLinkUri();
         } catch (TimeoutException | IOException e) {
             throw new SignalControl.Error.Failure(e.getClass().getSimpleName() + " " + e.getMessage());
         }
+        Thread.ofPlatform().name("dbus-link").start(() -> {
+            final ProvisioningManager provisioningManager = c.getProvisioningManagerFor(deviceLinkUri);
+            try {
+                provisioningManager.finishDeviceLink(newDeviceName);
+            } catch (IOException | TimeoutException | UserAlreadyExistsException e) {
+                logger.warn("Failed to finish linking", e);
+            }
+        });
+        return deviceLinkUri.toString();
     }
 
     @Override
@@ -127,7 +145,9 @@ public class DbusSignalControlImpl implements org.asamk.SignalControl {
         try {
             final var provisioningManager = c.getProvisioningManagerFor(new URI(deviceLinkUri));
             return provisioningManager.finishDeviceLink(newDeviceName);
-        } catch (TimeoutException | IOException | UserAlreadyExists | URISyntaxException e) {
+        } catch (UserAlreadyExistsException e) {
+            throw new SignalControl.Error.Failure(e.getClass().getSimpleName() + " " + e.getNumber());
+        } catch (TimeoutException | IOException | URISyntaxException e) {
             throw new SignalControl.Error.Failure(e.getClass().getSimpleName() + " " + e.getMessage());
         }
     }
@@ -139,11 +159,19 @@ public class DbusSignalControlImpl implements org.asamk.SignalControl {
 
     @Override
     public List<DBusPath> listAccounts() {
-        return c.getAccountNumbers().stream().map(u -> new DBusPath(DbusConfig.getObjectPath(u))).toList();
+        return c.getManagers()
+                .stream()
+                .map(m -> new DBusPath(DbusConfig.getObjectPath(m.getSelfIdentifier())))
+                .toList();
     }
 
     @Override
-    public DBusPath getAccount(final String number) {
-        return new DBusPath(DbusConfig.getObjectPath(number));
+    public DBusPath getAccount(final String identifier) {
+        final var manager = c.getManagers()
+                .stream()
+                .filter(m -> identifier.equals(m.getSelfNumber()) || identifier.equals(m.getSelfACI()))
+                .findFirst()
+                .orElseThrow(() -> new Error.Failure("Unknown account: " + identifier));
+        return new DBusPath(DbusConfig.getObjectPath(manager.getSelfIdentifier()));
     }
 }

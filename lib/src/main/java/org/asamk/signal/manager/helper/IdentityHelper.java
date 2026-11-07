@@ -1,29 +1,25 @@
 package org.asamk.signal.manager.helper;
 
-import org.asamk.signal.manager.TrustLevel;
+import org.asamk.signal.manager.api.TrustLevel;
 import org.asamk.signal.manager.storage.SignalAccount;
 import org.asamk.signal.manager.storage.recipients.RecipientId;
 import org.asamk.signal.manager.util.Utils;
+import org.signal.core.models.ServiceId;
+import org.signal.libsignal.protocol.IdentityKey;
+import org.signal.libsignal.protocol.fingerprint.Fingerprint;
+import org.signal.libsignal.protocol.fingerprint.FingerprintParsingException;
+import org.signal.libsignal.protocol.fingerprint.FingerprintVersionMismatchException;
+import org.signal.libsignal.protocol.fingerprint.ScannableFingerprint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.whispersystems.libsignal.IdentityKey;
-import org.whispersystems.libsignal.fingerprint.Fingerprint;
-import org.whispersystems.libsignal.fingerprint.FingerprintParsingException;
-import org.whispersystems.libsignal.fingerprint.FingerprintVersionMismatchException;
-import org.whispersystems.libsignal.fingerprint.ScannableFingerprint;
 import org.whispersystems.signalservice.api.messages.SendMessageResult;
-import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 
-import java.io.IOException;
 import java.util.Arrays;
-import java.util.Date;
-import java.util.function.Function;
-
-import static org.asamk.signal.manager.config.ServiceConfig.capabilities;
+import java.util.function.BiFunction;
 
 public class IdentityHelper {
 
-    private final static Logger logger = LoggerFactory.getLogger(IdentityHelper.class);
+    private static final Logger logger = LoggerFactory.getLogger(IdentityHelper.class);
 
     private final SignalAccount account;
     private final Context context;
@@ -35,19 +31,19 @@ public class IdentityHelper {
 
     public boolean trustIdentityVerified(RecipientId recipientId, byte[] fingerprint) {
         return trustIdentity(recipientId,
-                identityKey -> Arrays.equals(identityKey.serialize(), fingerprint),
+                (serviceId, identityKey) -> Arrays.equals(identityKey.serialize(), fingerprint),
                 TrustLevel.TRUSTED_VERIFIED);
     }
 
     public boolean trustIdentityVerifiedSafetyNumber(RecipientId recipientId, String safetyNumber) {
         return trustIdentity(recipientId,
-                identityKey -> safetyNumber.equals(computeSafetyNumber(recipientId, identityKey)),
+                (serviceId, identityKey) -> safetyNumber.equals(computeSafetyNumber(serviceId, identityKey)),
                 TrustLevel.TRUSTED_VERIFIED);
     }
 
     public boolean trustIdentityVerifiedSafetyNumber(RecipientId recipientId, byte[] safetyNumber) {
-        return trustIdentity(recipientId, identityKey -> {
-            final var fingerprint = computeSafetyNumberForScanning(recipientId, identityKey);
+        return trustIdentity(recipientId, (serviceId, identityKey) -> {
+            final var fingerprint = computeSafetyNumberForScanning(serviceId, identityKey);
             try {
                 return fingerprint != null && fingerprint.compareTo(safetyNumber);
             } catch (FingerprintVersionMismatchException | FingerprintParsingException e) {
@@ -57,60 +53,73 @@ public class IdentityHelper {
     }
 
     public boolean trustIdentityAllKeys(RecipientId recipientId) {
-        return trustIdentity(recipientId, identityKey -> true, TrustLevel.TRUSTED_UNVERIFIED);
+        return trustIdentity(recipientId, (serviceId, identityKey) -> true, TrustLevel.TRUSTED_UNVERIFIED);
     }
 
-    public String computeSafetyNumber(RecipientId recipientId, IdentityKey theirIdentityKey) {
-        var address = context.getRecipientHelper().resolveSignalServiceAddress(recipientId);
-        final Fingerprint fingerprint = computeSafetyNumberFingerprint(address, theirIdentityKey);
+    public String computeSafetyNumber(ServiceId serviceId, IdentityKey theirIdentityKey) {
+        final var fingerprint = computeSafetyNumberFingerprint(serviceId, theirIdentityKey);
         return fingerprint == null ? null : fingerprint.getDisplayableFingerprint().getDisplayText();
     }
 
-    public ScannableFingerprint computeSafetyNumberForScanning(RecipientId recipientId, IdentityKey theirIdentityKey) {
-        var address = context.getRecipientHelper().resolveSignalServiceAddress(recipientId);
-        final Fingerprint fingerprint = computeSafetyNumberFingerprint(address, theirIdentityKey);
+    public ScannableFingerprint computeSafetyNumberForScanning(ServiceId serviceId, IdentityKey theirIdentityKey) {
+        var fingerprint = computeSafetyNumberFingerprint(serviceId, theirIdentityKey);
         return fingerprint == null ? null : fingerprint.getScannableFingerprint();
     }
 
-    private Fingerprint computeSafetyNumberFingerprint(
-            final SignalServiceAddress theirAddress, final IdentityKey theirIdentityKey
-    ) {
-        return Utils.computeSafetyNumber(capabilities.isUuid(),
-                account.getSelfAddress(),
-                account.getIdentityKeyPair().getPublicKey(),
-                theirAddress,
+    private Fingerprint computeSafetyNumberFingerprint(final ServiceId serviceId, final IdentityKey theirIdentityKey) {
+        if (!serviceId.isUnknown()) {
+            return Utils.computeSafetyNumberForUuid(account.getAci(),
+                    account.getAciIdentityKeyPair().getPublicKey(),
+                    serviceId,
+                    theirIdentityKey);
+        }
+
+        final var recipientId = account.getRecipientResolver().resolveRecipient(serviceId);
+        final var address = account.getRecipientAddressResolver().resolveRecipientAddress(recipientId);
+
+        if (address.number().isEmpty()) {
+            return null;
+        }
+        return Utils.computeSafetyNumberForNumber(account.getNumber(),
+                account.getAciIdentityKeyPair().getPublicKey(),
+                address.number().get(),
                 theirIdentityKey);
     }
 
     private boolean trustIdentity(
-            RecipientId recipientId, Function<IdentityKey, Boolean> verifier, TrustLevel trustLevel
+            RecipientId recipientId,
+            BiFunction<ServiceId, IdentityKey, Boolean> verifier,
+            TrustLevel trustLevel
     ) {
-        var identity = account.getIdentityKeyStore().getIdentity(recipientId);
+        final var address = account.getRecipientAddressResolver().resolveRecipientAddress(recipientId);
+        final var serviceId = address.serviceId().orElse(null);
+        if (serviceId == null) {
+            return false;
+        }
+        var identity = account.getIdentityKeyStore().getIdentityInfo(serviceId);
         if (identity == null) {
             return false;
         }
 
-        if (!verifier.apply(identity.getIdentityKey())) {
+        if (!verifier.apply(serviceId, identity.getIdentityKey())) {
             return false;
         }
 
-        account.getIdentityKeyStore().setIdentityTrustLevel(recipientId, identity.getIdentityKey(), trustLevel);
-        try {
-            var address = context.getRecipientHelper().resolveSignalServiceAddress(recipientId);
-            context.getSyncHelper().sendVerifiedMessage(address, identity.getIdentityKey(), trustLevel);
-        } catch (IOException e) {
-            logger.warn("Failed to send verification sync message: {}", e.getMessage());
-        }
+        account.getIdentityKeyStore().setIdentityTrustLevel(serviceId, identity.getIdentityKey(), trustLevel);
+        context.getSyncHelper()
+                .sendVerifiedMessage(address.toSignalServiceAddress(), identity.getIdentityKey(), trustLevel);
 
         return true;
     }
 
     public void handleIdentityFailure(
-            final RecipientId recipientId, final SendMessageResult.IdentityFailure identityFailure
+            final RecipientId recipientId,
+            final ServiceId serviceId,
+            final SendMessageResult.IdentityFailure identityFailure
     ) {
         final var identityKey = identityFailure.getIdentityKey();
         if (identityKey != null) {
-            account.getIdentityKeyStore().saveIdentity(recipientId, identityKey, new Date());
+            account.getIdentityKeyStore().saveIdentity(serviceId, identityKey);
         } else {
             // Retrieve profile to get the current identity key from the server
             context.getProfileHelper().refreshRecipientProfile(recipientId);

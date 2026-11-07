@@ -7,9 +7,9 @@ import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.commands.exceptions.UnexpectedErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.manager.Manager;
-import org.asamk.signal.manager.NotMasterDeviceException;
+import org.asamk.signal.manager.api.GroupNotFoundException;
+import org.asamk.signal.manager.api.NotPrimaryDeviceException;
 import org.asamk.signal.manager.api.UnregisteredRecipientException;
-import org.asamk.signal.manager.groups.GroupNotFoundException;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.util.CommandUtil;
 import org.slf4j.Logger;
@@ -19,7 +19,7 @@ import java.io.IOException;
 
 public class BlockCommand implements JsonRpcLocalCommand {
 
-    private final static Logger logger = LoggerFactory.getLogger(BlockCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(BlockCommand.class);
 
     @Override
     public String getName() {
@@ -35,34 +35,32 @@ public class BlockCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         final var contacts = ns.<String>getList("recipient");
-        for (var contact : CommandUtil.getSingleRecipientIdentifiers(contacts, m.getSelfNumber())) {
-            try {
-                m.setContactBlocked(contact, true);
-            } catch (NotMasterDeviceException e) {
-                throw new UserErrorException("This command doesn't work on linked devices.");
-            } catch (IOException e) {
-                throw new UnexpectedErrorException("Failed to sync block to linked devices: " + e.getMessage(), e);
-            } catch (UnregisteredRecipientException e) {
-                throw new UserErrorException("The user " + e.getSender().getIdentifier() + " is not registered.");
-            }
+        final var recipients = CommandUtil.getSingleRecipientIdentifiers(contacts, m.getSelfNumber());
+        try {
+            m.setContactsBlocked(recipients, true);
+        } catch (NotPrimaryDeviceException e) {
+            throw new UserErrorException("This command doesn't work on linked devices.");
+        } catch (IOException e) {
+            throw new UnexpectedErrorException("Failed to sync block to linked devices: " + e.getMessage(), e);
+        } catch (UnregisteredRecipientException e) {
+            throw new UserErrorException("The user " + e.getSender().getIdentifier() + " is not registered.");
         }
 
         final var groupIdStrings = ns.<String>getList("group-id");
-        if (groupIdStrings != null) {
-            for (var groupId : CommandUtil.getGroupIds(groupIdStrings)) {
-                try {
-                    m.setGroupBlocked(groupId, true);
-                } catch (NotMasterDeviceException e) {
-                    throw new UserErrorException("This command doesn't work on linked devices.");
-                } catch (GroupNotFoundException e) {
-                    logger.warn("Group not found {}: {}", groupId.toBase64(), e.getMessage());
-                } catch (IOException e) {
-                    throw new UnexpectedErrorException("Failed to sync block to linked devices: " + e.getMessage(), e);
-                }
-            }
+        final var groupIds = CommandUtil.getGroupIds(groupIdStrings);
+        try {
+            m.setGroupsBlocked(groupIds, true);
+        } catch (NotPrimaryDeviceException e) {
+            throw new UserErrorException("This command doesn't work on linked devices.");
+        } catch (GroupNotFoundException e) {
+            logger.warn("Unknown group id: {}", e.getMessage());
+        } catch (IOException e) {
+            throw new UnexpectedErrorException("Failed to sync block to linked devices: " + e.getMessage(), e);
         }
     }
 }

@@ -1,12 +1,15 @@
 package org.asamk.signal.manager.groups;
 
+import org.asamk.signal.manager.api.GroupId;
+import org.asamk.signal.manager.api.GroupIdV1;
+import org.asamk.signal.manager.api.GroupIdV2;
 import org.asamk.signal.manager.storage.groups.GroupInfo;
 import org.asamk.signal.manager.storage.groups.GroupInfoV1;
 import org.asamk.signal.manager.storage.groups.GroupInfoV2;
-import org.signal.zkgroup.InvalidInputException;
-import org.signal.zkgroup.groups.GroupMasterKey;
-import org.signal.zkgroup.groups.GroupSecretParams;
-import org.whispersystems.libsignal.kdf.HKDF;
+import org.signal.libsignal.protocol.kdf.HKDF;
+import org.signal.libsignal.zkgroup.InvalidInputException;
+import org.signal.libsignal.zkgroup.groups.GroupMasterKey;
+import org.signal.libsignal.zkgroup.groups.GroupSecretParams;
 import org.whispersystems.signalservice.api.messages.SignalServiceDataMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceGroup;
 import org.whispersystems.signalservice.api.messages.SignalServiceGroupContext;
@@ -15,7 +18,8 @@ import org.whispersystems.signalservice.api.messages.SignalServiceGroupV2;
 public class GroupUtils {
 
     public static void setGroupContext(
-            final SignalServiceDataMessage.Builder messageBuilder, final GroupInfo groupInfo
+            final SignalServiceDataMessage.Builder messageBuilder,
+            final GroupInfo groupInfo
     ) {
         if (groupInfo instanceof GroupInfoV1) {
             var group = SignalServiceGroup.newBuilder(SignalServiceGroup.Type.DELIVER)
@@ -25,7 +29,7 @@ public class GroupUtils {
         } else {
             final var groupInfoV2 = (GroupInfoV2) groupInfo;
             var group = SignalServiceGroupV2.newBuilder(groupInfoV2.getMasterKey())
-                    .withRevision(groupInfoV2.getGroup() == null ? 0 : groupInfoV2.getGroup().getRevision())
+                    .withRevision(groupInfoV2.getGroup() == null ? 0 : groupInfoV2.getGroup().revision)
                     .build();
             messageBuilder.asGroupMessage(group);
         }

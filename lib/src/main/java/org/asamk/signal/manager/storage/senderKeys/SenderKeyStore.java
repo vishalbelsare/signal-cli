@@ -1,15 +1,17 @@
 package org.asamk.signal.manager.storage.senderKeys;
 
-import org.asamk.signal.manager.helper.RecipientAddressResolver;
-import org.asamk.signal.manager.storage.recipients.RecipientId;
-import org.asamk.signal.manager.storage.recipients.RecipientResolver;
-import org.whispersystems.libsignal.SignalProtocolAddress;
-import org.whispersystems.libsignal.groups.state.SenderKeyRecord;
+import org.asamk.signal.manager.api.Pair;
+import org.asamk.signal.manager.storage.Database;
+import org.signal.core.models.ServiceId;
+import org.signal.libsignal.protocol.SignalProtocolAddress;
+import org.signal.libsignal.protocol.groups.state.SenderKeyRecord;
 import org.whispersystems.signalservice.api.SignalServiceSenderKeyStore;
 import org.whispersystems.signalservice.api.push.DistributionId;
 
-import java.io.File;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.Collection;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -18,19 +20,16 @@ public class SenderKeyStore implements SignalServiceSenderKeyStore {
     private final SenderKeyRecordStore senderKeyRecordStore;
     private final SenderKeySharedStore senderKeySharedStore;
 
-    public SenderKeyStore(
-            final File file,
-            final File senderKeysPath,
-            final RecipientAddressResolver addressResolver,
-            final RecipientResolver resolver
-    ) {
-        this.senderKeyRecordStore = new SenderKeyRecordStore(senderKeysPath, resolver);
-        this.senderKeySharedStore = SenderKeySharedStore.load(file, addressResolver, resolver);
+    public SenderKeyStore(final Database database) {
+        this.senderKeyRecordStore = new SenderKeyRecordStore(database);
+        this.senderKeySharedStore = new SenderKeySharedStore(database);
     }
 
     @Override
     public void storeSenderKey(
-            final SignalProtocolAddress sender, final UUID distributionId, final SenderKeyRecord record
+            final SignalProtocolAddress sender,
+            final UUID distributionId,
+            final SenderKeyRecord record
     ) {
         senderKeyRecordStore.storeSenderKey(sender, distributionId, record);
     }
@@ -47,7 +46,8 @@ public class SenderKeyStore implements SignalServiceSenderKeyStore {
 
     @Override
     public void markSenderKeySharedWith(
-            final DistributionId distributionId, final Collection<SignalProtocolAddress> addresses
+            final DistributionId distributionId,
+            final Collection<SignalProtocolAddress> addresses
     ) {
         senderKeySharedStore.markSenderKeySharedWith(distributionId, addresses);
     }
@@ -62,30 +62,42 @@ public class SenderKeyStore implements SignalServiceSenderKeyStore {
         senderKeyRecordStore.deleteAll();
     }
 
-    public void deleteAll(RecipientId recipientId) {
-        senderKeySharedStore.deleteAllFor(recipientId);
-        senderKeyRecordStore.deleteAllFor(recipientId);
+    public void deleteAll(ServiceId serviceId) {
+        senderKeySharedStore.deleteAllFor(serviceId);
+        senderKeyRecordStore.deleteAllFor(serviceId);
     }
 
-    public void deleteSharedWith(RecipientId recipientId) {
-        senderKeySharedStore.deleteAllFor(recipientId);
+    public void deleteSharedWith(ServiceId serviceId) {
+        senderKeySharedStore.deleteAllFor(serviceId);
     }
 
-    public void deleteSharedWith(RecipientId recipientId, int deviceId, DistributionId distributionId) {
-        senderKeySharedStore.deleteSharedWith(recipientId, deviceId, distributionId);
+    public void deleteSharedWith(ServiceId serviceId, int deviceId, DistributionId distributionId) {
+        senderKeySharedStore.deleteSharedWith(serviceId, deviceId, distributionId);
     }
 
-    public void deleteOurKey(RecipientId selfRecipientId, DistributionId distributionId) {
+    public void deleteOurKey(ServiceId selfServiceId, DistributionId distributionId) {
         senderKeySharedStore.deleteAllFor(distributionId);
-        senderKeyRecordStore.deleteSenderKey(selfRecipientId, distributionId.asUuid());
+        senderKeyRecordStore.deleteSenderKey(selfServiceId, distributionId.asUuid());
     }
 
-    public long getCreateTimeForOurKey(RecipientId selfRecipientId, int deviceId, DistributionId distributionId) {
-        return senderKeyRecordStore.getCreateTimeForKey(selfRecipientId, deviceId, distributionId.asUuid());
+    public void deleteOurKey(
+            final Connection connection,
+            final ServiceId selfServiceId,
+            final DistributionId distributionId
+    ) throws SQLException {
+        senderKeySharedStore.deleteAllFor(connection, distributionId);
+        senderKeyRecordStore.deleteSenderKey(connection, selfServiceId, distributionId.asUuid());
     }
 
-    public void mergeRecipients(RecipientId recipientId, RecipientId toBeMergedRecipientId) {
-        senderKeySharedStore.mergeRecipients(recipientId, toBeMergedRecipientId);
-        senderKeyRecordStore.mergeRecipients(recipientId, toBeMergedRecipientId);
+    public long getCreateTimeForOurKey(ServiceId selfServiceId, int deviceId, DistributionId distributionId) {
+        return senderKeyRecordStore.getCreateTimeForKey(selfServiceId, deviceId, distributionId.asUuid());
+    }
+
+    void addLegacySenderKeys(final Collection<Pair<SenderKeyRecordStore.Key, SenderKeyRecord>> senderKeys) {
+        senderKeyRecordStore.addLegacySenderKeys(senderKeys);
+    }
+
+    void addLegacySenderKeysShared(final Map<DistributionId, Set<SenderKeySharedStore.SenderKeySharedEntry>> sharedSenderKeys) {
+        senderKeySharedStore.addLegacySenderKeysShared(sharedSenderKeys);
     }
 }

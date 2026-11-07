@@ -3,79 +3,122 @@ package org.asamk.signal.manager.storage;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import org.asamk.signal.manager.TrustLevel;
+import org.asamk.signal.manager.Settings;
+import org.asamk.signal.manager.api.Contact;
+import org.asamk.signal.manager.api.GroupId;
 import org.asamk.signal.manager.api.Pair;
-import org.asamk.signal.manager.groups.GroupId;
+import org.asamk.signal.manager.api.Profile;
+import org.asamk.signal.manager.api.ServiceEnvironment;
+import org.asamk.signal.manager.api.TrustLevel;
+import org.asamk.signal.manager.helper.RecipientAddressResolver;
 import org.asamk.signal.manager.storage.configuration.ConfigurationStore;
+import org.asamk.signal.manager.storage.configuration.LegacyConfigurationStore;
 import org.asamk.signal.manager.storage.contacts.ContactsStore;
 import org.asamk.signal.manager.storage.contacts.LegacyJsonContactsStore;
 import org.asamk.signal.manager.storage.groups.GroupInfoV1;
 import org.asamk.signal.manager.storage.groups.GroupInfoV2;
 import org.asamk.signal.manager.storage.groups.GroupStore;
+import org.asamk.signal.manager.storage.groups.LegacyGroupStore;
 import org.asamk.signal.manager.storage.identities.IdentityKeyStore;
-import org.asamk.signal.manager.storage.identities.TrustNewIdentity;
+import org.asamk.signal.manager.storage.identities.LegacyIdentityKeyStore;
+import org.asamk.signal.manager.storage.identities.SignalIdentityKeyStore;
+import org.asamk.signal.manager.storage.keyValue.KeyValueEntry;
+import org.asamk.signal.manager.storage.keyValue.KeyValueStore;
 import org.asamk.signal.manager.storage.messageCache.MessageCache;
+import org.asamk.signal.manager.storage.prekeys.KyberPreKeyStore;
+import org.asamk.signal.manager.storage.prekeys.LegacyPreKeyStore;
+import org.asamk.signal.manager.storage.prekeys.LegacySignedPreKeyStore;
 import org.asamk.signal.manager.storage.prekeys.PreKeyStore;
 import org.asamk.signal.manager.storage.prekeys.SignedPreKeyStore;
 import org.asamk.signal.manager.storage.profiles.LegacyProfileStore;
 import org.asamk.signal.manager.storage.profiles.ProfileStore;
 import org.asamk.signal.manager.storage.protocol.LegacyJsonSignalProtocolStore;
 import org.asamk.signal.manager.storage.protocol.SignalProtocolStore;
-import org.asamk.signal.manager.storage.recipients.Contact;
+import org.asamk.signal.manager.storage.recipients.CdsiStore;
 import org.asamk.signal.manager.storage.recipients.LegacyRecipientStore;
-import org.asamk.signal.manager.storage.recipients.Profile;
+import org.asamk.signal.manager.storage.recipients.LegacyRecipientStore2;
 import org.asamk.signal.manager.storage.recipients.RecipientAddress;
 import org.asamk.signal.manager.storage.recipients.RecipientId;
+import org.asamk.signal.manager.storage.recipients.RecipientIdCreator;
+import org.asamk.signal.manager.storage.recipients.RecipientResolver;
 import org.asamk.signal.manager.storage.recipients.RecipientStore;
+import org.asamk.signal.manager.storage.recipients.RecipientTrustedResolver;
 import org.asamk.signal.manager.storage.sendLog.MessageSendLogStore;
+import org.asamk.signal.manager.storage.senderKeys.LegacySenderKeyRecordStore;
+import org.asamk.signal.manager.storage.senderKeys.LegacySenderKeySharedStore;
 import org.asamk.signal.manager.storage.senderKeys.SenderKeyStore;
+import org.asamk.signal.manager.storage.sessions.LegacySessionStore;
 import org.asamk.signal.manager.storage.sessions.SessionStore;
+import org.asamk.signal.manager.storage.stickers.LegacyStickerStore;
 import org.asamk.signal.manager.storage.stickers.StickerStore;
 import org.asamk.signal.manager.storage.threads.LegacyJsonThreadStore;
 import org.asamk.signal.manager.util.IOUtils;
 import org.asamk.signal.manager.util.KeyUtils;
-import org.signal.zkgroup.InvalidInputException;
-import org.signal.zkgroup.profiles.ProfileKey;
+import org.signal.core.models.AccountEntropyPool;
+import org.signal.core.models.MasterKey;
+import org.signal.core.models.ServiceId;
+import org.signal.core.models.ServiceId.ACI;
+import org.signal.core.models.ServiceId.PNI;
+import org.signal.core.models.backup.MediaRootBackupKey;
+import org.signal.core.models.storageservice.StorageKey;
+import org.signal.core.util.UuidUtil;
+import org.signal.libsignal.protocol.IdentityKeyPair;
+import org.signal.libsignal.protocol.InvalidMessageException;
+import org.signal.libsignal.protocol.SignalProtocolAddress;
+import org.signal.libsignal.protocol.state.KyberPreKeyRecord;
+import org.signal.libsignal.protocol.state.PreKeyRecord;
+import org.signal.libsignal.protocol.state.SessionRecord;
+import org.signal.libsignal.protocol.state.SignedPreKeyRecord;
+import org.signal.libsignal.protocol.util.KeyHelper;
+import org.signal.libsignal.zkgroup.InvalidInputException;
+import org.signal.libsignal.zkgroup.profiles.ProfileKey;
+import org.signal.network.api.RegistrationApiV2;
+import org.signal.network.crypto.UnidentifiedAccess;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.whispersystems.libsignal.IdentityKeyPair;
-import org.whispersystems.libsignal.SignalProtocolAddress;
-import org.whispersystems.libsignal.state.PreKeyRecord;
-import org.whispersystems.libsignal.state.SessionRecord;
-import org.whispersystems.libsignal.state.SignedPreKeyRecord;
-import org.whispersystems.libsignal.util.Medium;
-import org.whispersystems.signalservice.api.crypto.UnidentifiedAccess;
-import org.whispersystems.signalservice.api.kbs.MasterKey;
-import org.whispersystems.signalservice.api.push.ACI;
-import org.whispersystems.signalservice.api.push.DistributionId;
+import org.whispersystems.signalservice.api.SignalServiceAccountDataStore;
+import org.whispersystems.signalservice.api.SignalServiceDataStore;
+import org.whispersystems.signalservice.api.account.AccountAttributes;
+import org.whispersystems.signalservice.api.account.PreKeyCollection;
+import org.whispersystems.signalservice.api.push.ServiceIdType;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
-import org.whispersystems.signalservice.api.storage.StorageKey;
-import org.whispersystems.signalservice.api.util.UuidUtil;
+import org.whispersystems.signalservice.api.push.UsernameLinkComponents;
+import org.whispersystems.signalservice.api.storage.SignalStorageManifest;
+import org.whispersystems.signalservice.api.util.CredentialsProvider;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
-import java.security.SecureRandom;
+import java.nio.file.Files;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Base64;
-import java.util.Date;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.Supplier;
+
+import static org.asamk.signal.manager.config.ServiceConfig.PREKEY_MAXIMUM_ID;
+import static org.asamk.signal.manager.config.ServiceConfig.getCapabilities;
 
 public class SignalAccount implements Closeable {
 
-    private final static Logger logger = LoggerFactory.getLogger(SignalAccount.class);
+    private static final Logger logger = LoggerFactory.getLogger(SignalAccount.class);
 
     private static final int MINIMUM_STORAGE_VERSION = 1;
-    private static final int CURRENT_STORAGE_VERSION = 3;
+    private static final int CURRENT_STORAGE_VERSION = 11;
 
     private final Object LOCK = new Object();
 
@@ -87,67 +130,93 @@ public class SignalAccount implements Closeable {
     private int previousStorageVersion;
 
     private File dataPath;
-    private String account;
-    private ACI aci;
+    private String accountPath;
+
+    private ServiceEnvironment serviceEnvironment;
+    private String number;
+    private String username;
+    private UsernameLinkComponents usernameLink;
     private String encryptedDeviceName;
-    private int deviceId = SignalServiceAddress.DEFAULT_DEVICE_ID;
-    private boolean isMultiDevice = false;
+    private int deviceId = 0;
     private String password;
     private String registrationLockPin;
     private MasterKey pinMasterKey;
     private StorageKey storageKey;
-    private long storageManifestVersion = -1;
+    private AccountEntropyPool accountEntropyPool;
+    private byte[] authCredentialSalt;
+    private MediaRootBackupKey mediaRootBackupKey;
     private ProfileKey profileKey;
-    private int preKeyIdOffset;
-    private int nextSignedPreKeyId;
-    private IdentityKeyPair identityKeyPair;
-    private int localRegistrationId;
-    private TrustNewIdentity trustNewIdentity;
-    private long lastReceiveTimestamp = 0;
 
+    private Settings settings;
+
+    private final KeyValueEntry<String> verificationSessionId = new KeyValueEntry<>("verification-session-id",
+            String.class);
+    private final KeyValueEntry<String> verificationSessionNumber = new KeyValueEntry<>("verification-session-number",
+            String.class);
+    private final KeyValueEntry<Long> lastReceiveTimestamp = new KeyValueEntry<>("last-receive-timestamp",
+            long.class,
+            0L);
+    private final KeyValueEntry<Long> lastAppliedPniChangeServerTimestamp = new KeyValueEntry<>(
+            "last-applied-pni-change-server-timestamp",
+            long.class,
+            0L);
+    private final KeyValueEntry<Boolean> needsToRetryFailedMessages = new KeyValueEntry<>("retry-failed-messages",
+            Boolean.class,
+            true);
+    private final KeyValueEntry<byte[]> cdsiToken = new KeyValueEntry<>("cdsi-token", byte[].class);
+    private final KeyValueEntry<Long> lastRecipientsRefresh = new KeyValueEntry<>("last-recipients-refresh",
+            long.class);
+    private final KeyValueEntry<Long> storageManifestVersion = new KeyValueEntry<>("storage-manifest-version",
+            long.class,
+            -1L);
+    private final KeyValueEntry<Boolean> unrestrictedUnidentifiedAccess = new KeyValueEntry<>(
+            "unrestricted-unidentified-access",
+            Boolean.class,
+            false);
+    private boolean isMultiDevice = false;
     private boolean registered = false;
 
-    private SignalProtocolStore signalProtocolStore;
-    private PreKeyStore preKeyStore;
-    private SignedPreKeyStore signedPreKeyStore;
-    private SessionStore sessionStore;
+    private final AccountData<ACI> aciAccountData = new AccountData<>(ServiceIdType.ACI);
+    private final AccountData<PNI> pniAccountData = new AccountData<>(ServiceIdType.PNI);
     private IdentityKeyStore identityKeyStore;
     private SenderKeyStore senderKeyStore;
     private GroupStore groupStore;
-    private GroupStore.Storage groupStoreStorage;
     private RecipientStore recipientStore;
     private StickerStore stickerStore;
-    private StickerStore.Storage stickerStoreStorage;
+    private UnknownStorageIdStore unknownStorageIdStore;
     private ConfigurationStore configurationStore;
-    private ConfigurationStore.Storage configurationStoreStorage;
+    private KeyValueStore keyValueStore;
+    private CdsiStore cdsiStore;
 
     private MessageCache messageCache;
     private MessageSendLogStore messageSendLogStore;
 
-    private Database database;
+    private AccountDatabase accountDatabase;
+    private RecipientId selfRecipientId;
 
     private SignalAccount(final FileChannel fileChannel, final FileLock lock) {
         this.fileChannel = fileChannel;
         this.lock = lock;
     }
 
+    public File getDataPath() {
+        return dataPath;
+    }
+
     public static SignalAccount load(
-            File dataPath, String account, boolean waitForLock, final TrustNewIdentity trustNewIdentity
+            File dataPath,
+            String accountPath,
+            boolean waitForLock,
+            final Settings settings
     ) throws IOException {
         logger.trace("Opening account file");
-        final var fileName = getFileName(dataPath, account);
+        final var fileName = getFileName(dataPath, accountPath);
         final var pair = openFileChannel(fileName, waitForLock);
         try {
             var signalAccount = new SignalAccount(pair.first(), pair.second());
-            logger.trace("Loading account file");
-            signalAccount.load(dataPath, trustNewIdentity);
-            logger.trace("Migrating legacy parts of account file");
+            signalAccount.load(dataPath, accountPath, settings);
             signalAccount.migrateLegacyConfigs();
-
-            if (!account.equals(signalAccount.getAccount())) {
-                throw new IOException("Number in account file doesn't match expected number: "
-                        + signalAccount.getAccount());
-            }
+            signalAccount.init();
 
             return signalAccount;
         } catch (Throwable e) {
@@ -159,14 +228,38 @@ public class SignalAccount implements Closeable {
 
     public static SignalAccount create(
             File dataPath,
-            String account,
-            IdentityKeyPair identityKey,
-            int registrationId,
+            String accountPath,
+            String number,
+            ServiceEnvironment serviceEnvironment,
+            IdentityKeyPair aciIdentityKey,
+            IdentityKeyPair pniIdentityKey,
             ProfileKey profileKey,
-            final TrustNewIdentity trustNewIdentity
+            final Settings settings
+    ) throws IOException {
+        return create(dataPath,
+                accountPath,
+                number,
+                null,
+                serviceEnvironment,
+                aciIdentityKey,
+                pniIdentityKey,
+                profileKey,
+                settings);
+    }
+
+    public static SignalAccount create(
+            File dataPath,
+            String accountPath,
+            String number,
+            ACI aci,
+            ServiceEnvironment serviceEnvironment,
+            IdentityKeyPair aciIdentityKey,
+            IdentityKeyPair pniIdentityKey,
+            ProfileKey profileKey,
+            final Settings settings
     ) throws IOException {
         IOUtils.createPrivateDirectories(dataPath);
-        var fileName = getFileName(dataPath, account);
+        var fileName = getFileName(dataPath, accountPath);
         if (!fileName.exists()) {
             IOUtils.createPrivateFile(fileName);
         }
@@ -174,172 +267,257 @@ public class SignalAccount implements Closeable {
         final var pair = openFileChannel(fileName, true);
         var signalAccount = new SignalAccount(pair.first(), pair.second());
 
-        signalAccount.account = account;
+        signalAccount.accountPath = accountPath;
+        signalAccount.number = number;
+        signalAccount.serviceEnvironment = serviceEnvironment;
         signalAccount.profileKey = profileKey;
+        signalAccount.password = KeyUtils.createPassword();
+        signalAccount.deviceId = SignalServiceAddress.DEFAULT_DEVICE_ID;
 
         signalAccount.dataPath = dataPath;
-        signalAccount.identityKeyPair = identityKey;
-        signalAccount.localRegistrationId = registrationId;
-        signalAccount.trustNewIdentity = trustNewIdentity;
-        signalAccount.groupStore = new GroupStore(getGroupCachePath(dataPath, account),
-                signalAccount.getRecipientStore(),
-                signalAccount::saveGroupStore);
-        signalAccount.stickerStore = new StickerStore(signalAccount::saveStickerStore);
-        signalAccount.configurationStore = new ConfigurationStore(signalAccount::saveConfigurationStore);
+        signalAccount.aciAccountData.setServiceId(aci);
+        signalAccount.aciAccountData.setIdentityKeyPair(aciIdentityKey);
+        signalAccount.pniAccountData.setIdentityKeyPair(pniIdentityKey);
+        signalAccount.aciAccountData.setLocalRegistrationId(KeyHelper.generateRegistrationId(false));
+        signalAccount.pniAccountData.setLocalRegistrationId(KeyHelper.generateRegistrationId(false));
+        signalAccount.initAllPreKeyIds();
+        signalAccount.settings = settings;
 
         signalAccount.registered = false;
 
         signalAccount.previousStorageVersion = CURRENT_STORAGE_VERSION;
-        signalAccount.migrateLegacyConfigs();
+        signalAccount.init();
         signalAccount.save();
 
         return signalAccount;
     }
 
-    public static SignalAccount createOrUpdateLinkedAccount(
-            File dataPath,
-            String account,
-            ACI aci,
-            String password,
-            String encryptedDeviceName,
-            int deviceId,
-            IdentityKeyPair identityKey,
-            int registrationId,
-            ProfileKey profileKey,
-            final TrustNewIdentity trustNewIdentity
+    public static SignalAccount createLinkedAccount(
+            final File dataPath,
+            final String accountPath,
+            final ServiceEnvironment serviceEnvironment,
+            final Settings settings
     ) throws IOException {
         IOUtils.createPrivateDirectories(dataPath);
-        var fileName = getFileName(dataPath, account);
-        if (!fileName.exists()) {
-            return createLinkedAccount(dataPath,
-                    account,
-                    aci,
-                    password,
-                    encryptedDeviceName,
-                    deviceId,
-                    identityKey,
-                    registrationId,
-                    profileKey,
-                    trustNewIdentity);
-        }
-
-        final var signalAccount = load(dataPath, account, true, trustNewIdentity);
-        signalAccount.setProvisioningData(account, aci, password, encryptedDeviceName, deviceId, profileKey);
-        signalAccount.getRecipientStore().resolveRecipientTrusted(signalAccount.getSelfAddress());
-        signalAccount.getSessionStore().archiveAllSessions();
-        signalAccount.getSenderKeyStore().deleteAll();
-        signalAccount.clearAllPreKeys();
-        return signalAccount;
-    }
-
-    public void initDatabase() {
-        getDatabase();
-    }
-
-    private void clearAllPreKeys() {
-        this.preKeyIdOffset = new SecureRandom().nextInt(Medium.MAX_VALUE);
-        this.nextSignedPreKeyId = new SecureRandom().nextInt(Medium.MAX_VALUE);
-        this.getPreKeyStore().removeAllPreKeys();
-        this.getSignedPreKeyStore().removeAllSignedPreKeys();
-        save();
-    }
-
-    private static SignalAccount createLinkedAccount(
-            File dataPath,
-            String account,
-            ACI aci,
-            String password,
-            String encryptedDeviceName,
-            int deviceId,
-            IdentityKeyPair identityKey,
-            int registrationId,
-            ProfileKey profileKey,
-            final TrustNewIdentity trustNewIdentity
-    ) throws IOException {
-        var fileName = getFileName(dataPath, account);
+        var fileName = getFileName(dataPath, accountPath);
         IOUtils.createPrivateFile(fileName);
 
         final var pair = openFileChannel(fileName, true);
-        var signalAccount = new SignalAccount(pair.first(), pair.second());
-
-        signalAccount.setProvisioningData(account, aci, password, encryptedDeviceName, deviceId, profileKey);
+        final var signalAccount = new SignalAccount(pair.first(), pair.second());
 
         signalAccount.dataPath = dataPath;
-        signalAccount.identityKeyPair = identityKey;
-        signalAccount.localRegistrationId = registrationId;
-        signalAccount.trustNewIdentity = trustNewIdentity;
-        signalAccount.groupStore = new GroupStore(getGroupCachePath(dataPath, account),
-                signalAccount.getRecipientStore(),
-                signalAccount::saveGroupStore);
-        signalAccount.stickerStore = new StickerStore(signalAccount::saveStickerStore);
-        signalAccount.configurationStore = new ConfigurationStore(signalAccount::saveConfigurationStore);
+        signalAccount.accountPath = accountPath;
+        signalAccount.serviceEnvironment = serviceEnvironment;
+        signalAccount.aciAccountData.setLocalRegistrationId(KeyHelper.generateRegistrationId(false));
+        signalAccount.pniAccountData.setLocalRegistrationId(KeyHelper.generateRegistrationId(false));
+        signalAccount.settings = settings;
 
-        signalAccount.getRecipientStore().resolveRecipientTrusted(signalAccount.getSelfAddress());
         signalAccount.previousStorageVersion = CURRENT_STORAGE_VERSION;
-        signalAccount.migrateLegacyConfigs();
-        signalAccount.save();
 
         return signalAccount;
     }
 
-    private void setProvisioningData(
-            final String account,
+    public void setProvisioningData(
+            final String number,
             final ACI aci,
+            final PNI pni,
             final String password,
-            final String encryptedDeviceName,
-            final int deviceId,
-            final ProfileKey profileKey
+            final byte[] encryptedDeviceName,
+            final IdentityKeyPair aciIdentity,
+            final IdentityKeyPair pniIdentity,
+            final ProfileKey profileKey,
+            final AccountEntropyPool accountEntropyPool,
+            final byte[] authCredentialSalt,
+            final MediaRootBackupKey mediaRootBackupKey
     ) {
-        this.account = account;
-        this.aci = aci;
+        this.deviceId = 0;
+        this.number = number;
+        this.aciAccountData.setServiceId(aci);
+        this.pniAccountData.setServiceId(pni);
+        this.init();
+        getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
         this.password = password;
         this.profileKey = profileKey;
-        this.encryptedDeviceName = encryptedDeviceName;
-        this.deviceId = deviceId;
-        this.registered = true;
+        this.encryptedDeviceName = org.signal.core.util.Base64.encodeWithoutPadding(encryptedDeviceName);
+        this.aciAccountData.setIdentityKeyPair(aciIdentity);
+        this.pniAccountData.setIdentityKeyPair(pniIdentity);
+        this.registered = false;
         this.isMultiDevice = true;
-        this.lastReceiveTimestamp = 0;
-        this.pinMasterKey = null;
-        this.storageManifestVersion = -1;
+        setLastReceiveTimestamp(0L);
+        setLastAppliedPniChangeServerTimestamp(0L);
+        if (accountEntropyPool != null) {
+            this.pinMasterKey = null;
+            this.accountEntropyPool = accountEntropyPool;
+        } else {
+            this.pinMasterKey = null;
+            this.accountEntropyPool = null;
+        }
+        this.authCredentialSalt = authCredentialSalt;
+        this.mediaRootBackupKey = mediaRootBackupKey;
+        getKeyValueStore().storeEntry(storageManifestVersion, -1L);
+        this.setStorageManifest(null);
         this.storageKey = null;
+        getSenderKeyStore().deleteAll();
+        trustSelfIdentity(ServiceIdType.ACI);
+        trustSelfIdentity(ServiceIdType.PNI);
+        aciAccountData.getSessionStore().archiveAllSessions();
+        pniAccountData.getSessionStore().archiveAllSessions();
+        clearAllPreKeys();
+        getKeyValueStore().storeEntry(lastRecipientsRefresh, null);
+        save();
+    }
+
+    public void finishLinking(
+            final int deviceId,
+            final PreKeyCollection aciPreKeys,
+            final PreKeyCollection pniPreKeys
+    ) {
+        this.registered = true;
+        this.deviceId = deviceId;
+        setPreKeys(ServiceIdType.ACI, aciPreKeys);
+        if (pniPreKeys != null) {
+            setPreKeys(ServiceIdType.PNI, pniPreKeys);
+        }
+        save();
+    }
+
+    public void finishRegistration(
+            final ACI aci,
+            final PNI pni,
+            final MasterKey masterKey,
+            final String pin,
+            final PreKeyCollection aciPreKeys,
+            final PreKeyCollection pniPreKeys
+    ) {
+        this.pinMasterKey = masterKey;
+        this.accountEntropyPool = null;
+        this.authCredentialSalt = null;
+        getKeyValueStore().storeEntry(storageManifestVersion, -1L);
+        this.setStorageManifest(null);
+        this.storageKey = null;
+        this.encryptedDeviceName = null;
+        this.deviceId = SignalServiceAddress.DEFAULT_DEVICE_ID;
+        this.isMultiDevice = false;
+        this.registered = true;
+        this.aciAccountData.setServiceId(aci);
+        this.pniAccountData.setServiceId(pni);
+        init();
+        this.registrationLockPin = pin;
+        setLastReceiveTimestamp(0L);
+        setLastAppliedPniChangeServerTimestamp(0L);
+        save();
+
+        setPreKeys(ServiceIdType.ACI, aciPreKeys);
+        setPreKeys(ServiceIdType.PNI, pniPreKeys);
+        aciAccountData.getSessionStore().archiveAllSessions();
+        pniAccountData.getSessionStore().archiveAllSessions();
+        getSenderKeyStore().deleteAll();
+        getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
+        trustSelfIdentity(ServiceIdType.ACI);
+        trustSelfIdentity(ServiceIdType.PNI);
+        getKeyValueStore().storeEntry(lastRecipientsRefresh, null);
+        clearSessionId();
+    }
+
+    public void finishRecoveryRegistration(
+            final ACI aci,
+            final PNI pni,
+            final String number,
+            final AccountEntropyPool accountEntropyPool,
+            final byte[] authCredentialSalt,
+            final PreKeyCollection aciPreKeys,
+            final PreKeyCollection pniPreKeys
+    ) {
+        this.pinMasterKey = null;
+        this.accountEntropyPool = accountEntropyPool;
+        this.authCredentialSalt = authCredentialSalt;
+        this.number = number;
+        getKeyValueStore().storeEntry(storageManifestVersion, -1L);
+        this.setStorageManifest(null);
+        this.storageKey = null;
+        this.encryptedDeviceName = null;
+        this.deviceId = SignalServiceAddress.DEFAULT_DEVICE_ID;
+        this.isMultiDevice = false;
+        this.registered = true;
+        this.aciAccountData.setServiceId(aci);
+        this.pniAccountData.setServiceId(pni);
+        if (pni == null) {
+            this.pniAccountData.setIdentityKeyPair(null);
+        }
+        init();
+        this.registrationLockPin = null;
+        setLastReceiveTimestamp(0L);
+        setLastAppliedPniChangeServerTimestamp(0L);
+        save();
+
+        setPreKeys(ServiceIdType.ACI, aciPreKeys);
+        if (pni != null && pniPreKeys != null) {
+            setPreKeys(ServiceIdType.PNI, pniPreKeys);
+        }
+        aciAccountData.getSessionStore().archiveAllSessions();
+        pniAccountData.getSessionStore().archiveAllSessions();
+        getSenderKeyStore().deleteAll();
+        getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
+        trustSelfIdentity(ServiceIdType.ACI);
+        if (pni != null) {
+            trustSelfIdentity(ServiceIdType.PNI);
+        }
+        getKeyValueStore().storeEntry(lastRecipientsRefresh, null);
+        clearSessionId();
+    }
+
+    public void initDatabase() {
+        getAccountDatabase();
+    }
+
+    private void init() {
+        this.selfRecipientId = getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
     }
 
     private void migrateLegacyConfigs() {
-        if (getPassword() == null) {
-            setPassword(KeyUtils.createPassword());
-        }
-
-        if (getProfileKey() == null) {
-            // Old config file, creating new profile key
-            setProfileKey(KeyUtils.createProfileKey());
-        }
-        // Ensure our profile key is stored in profile store
-        getProfileStore().storeProfileKey(getSelfRecipientId(), getProfileKey());
-        if (previousStorageVersion < 3) {
-            for (final var group : groupStore.getGroups()) {
-                if (group instanceof GroupInfoV2 && group.getDistributionId() == null) {
-                    ((GroupInfoV2) group).setDistributionId(DistributionId.create());
-                    groupStore.updateGroup(group);
-                }
-            }
-            save();
+        if (isPrimaryDevice() && (number != null || getPni() != null) && getPniIdentityKeyPair() == null) {
+            logger.trace("Migrating legacy parts of account file");
+            setPniIdentityKeyPair(KeyUtils.generateIdentityKeyPair());
         }
     }
 
-    private void mergeRecipients(RecipientId recipientId, RecipientId toBeMergedRecipientId) {
-        getSessionStore().mergeRecipients(recipientId, toBeMergedRecipientId);
-        getIdentityKeyStore().mergeRecipients(recipientId, toBeMergedRecipientId);
+    private void mergeRecipients(
+            final Connection connection,
+            RecipientId recipientId,
+            RecipientId toBeMergedRecipientId
+    ) throws SQLException {
         getMessageCache().mergeRecipients(recipientId, toBeMergedRecipientId);
-        getGroupStore().mergeRecipients(recipientId, toBeMergedRecipientId);
-        getSenderKeyStore().mergeRecipients(recipientId, toBeMergedRecipientId);
+        getGroupStore().mergeRecipients(connection, recipientId, toBeMergedRecipientId);
+    }
+
+    private void rotateOurSenderKey(final Connection connection, final GroupInfoV2 group) throws SQLException {
+        // A full member is gone, so former members must not decrypt what we send next. The check before each sender key
+        // send misses them if their sender_key_shared entries were deleted, e.g. after a decryption error message.
+        logger.debug("A member was removed from group {}, rotating our sender key.", group.getGroupId().toBase64());
+        getSenderKeyStore().deleteOurKey(connection, getAci(), group.getDistributionId());
     }
 
     public void removeRecipient(final RecipientId recipientId) {
-        getSessionStore().deleteAllSessions(recipientId);
-        getIdentityKeyStore().deleteIdentity(recipientId);
-        getMessageCache().deleteMessages(recipientId);
-        getSenderKeyStore().deleteAll(recipientId);
+        final var recipientAddress = getRecipientStore().resolveRecipientAddress(recipientId);
+        if (recipientAddress.matches(getSelfRecipientAddress())) {
+            throw new RuntimeException("Can't delete self recipient");
+        }
         getRecipientStore().deleteRecipientData(recipientId);
+        getMessageCache().deleteMessages(recipientId);
+        if (recipientAddress.aci().isPresent()) {
+            final var serviceId = recipientAddress.aci().get();
+            aciAccountData.getSessionStore().deleteAllSessions(serviceId);
+            pniAccountData.getSessionStore().deleteAllSessions(serviceId);
+            getIdentityKeyStore().deleteIdentity(serviceId);
+            getSenderKeyStore().deleteAll(serviceId);
+        }
+        if (recipientAddress.pni().isPresent()) {
+            final var serviceId = recipientAddress.pni().get();
+            aciAccountData.getSessionStore().deleteAllSessions(serviceId);
+            pniAccountData.getSessionStore().deleteAllSessions(serviceId);
+            getIdentityKeyStore().deleteIdentity(serviceId);
+            getSenderKeyStore().deleteAll(serviceId);
+        }
     }
 
     public static File getFileName(File dataPath, String account) {
@@ -360,80 +538,173 @@ public class SignalAccount implements Closeable {
         return new File(getUserPath(dataPath, account), "msg-cache");
     }
 
-    private static File getGroupCachePath(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "group-cache");
-    }
-
-    private static File getPreKeysPath(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "pre-keys");
-    }
-
-    private static File getSignedPreKeysPath(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "signed-pre-keys");
-    }
-
-    private static File getIdentitiesPath(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "identities");
-    }
-
-    private static File getSessionsPath(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "sessions");
-    }
-
-    private static File getSenderKeysPath(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "sender-keys");
-    }
-
-    private static File getSharedSenderKeysFile(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "shared-sender-keys-store");
-    }
-
-    private static File getRecipientsStoreFile(File dataPath, String account) {
-        return new File(getUserPath(dataPath, account), "recipients-store");
+    private static File getStorageManifestFile(File dataPath, String account) {
+        return new File(getUserPath(dataPath, account), "storage-manifest");
     }
 
     private static File getDatabaseFile(File dataPath, String account) {
         return new File(getUserPath(dataPath, account), "account.db");
     }
 
-    public static boolean userExists(File dataPath, String account) {
+    public static boolean accountFileExists(File dataPath, String account) {
         if (account == null) {
             return false;
         }
         var f = getFileName(dataPath, account);
-        return !(!f.exists() || f.isDirectory());
+        return f.exists() && !f.isDirectory() && f.length() > 0L;
     }
 
-    private void load(
-            File dataPath, final TrustNewIdentity trustNewIdentity
-    ) throws IOException {
-        JsonNode rootNode;
+    private void load(File dataPath, String accountPath, final Settings settings) throws IOException {
+        logger.trace("Loading account file {}", accountPath);
+        this.dataPath = dataPath;
+        this.accountPath = accountPath;
+        this.settings = settings;
+        final JsonNode rootNode;
         synchronized (fileChannel) {
             fileChannel.position(0);
             rootNode = jsonProcessor.readTree(Channels.newInputStream(fileChannel));
         }
 
+        var migratedLegacyConfig = false;
+
         if (rootNode.hasNonNull("version")) {
             var accountVersion = rootNode.get("version").asInt(1);
             if (accountVersion > CURRENT_STORAGE_VERSION) {
-                throw new IOException("Config file was created by a more recent version!");
+                throw new IOException("Config file was created by a more recent version: " + accountVersion);
             } else if (accountVersion < MINIMUM_STORAGE_VERSION) {
-                throw new IOException("Config file was created by a no longer supported older version!");
+                throw new IOException("Config file was created by a no longer supported older version: "
+                        + accountVersion);
             }
             previousStorageVersion = accountVersion;
+            if (accountVersion < CURRENT_STORAGE_VERSION) {
+                migratedLegacyConfig = true;
+            }
         }
 
-        account = Utils.getNotNullNode(rootNode, "username").asText();
+        if (previousStorageVersion < 8) {
+            final var userPath = getUserPath(dataPath, accountPath);
+            loadLegacyFile(userPath, rootNode);
+            migratedLegacyConfig = true;
+        } else {
+            final var storage = jsonProcessor.convertValue(rootNode, Storage.class);
+            serviceEnvironment = ServiceEnvironment.valueOf(storage.serviceEnvironment);
+            registered = storage.registered;
+            number = storage.number;
+            username = storage.username;
+            if ("".equals(username)) {
+                username = null;
+            }
+            encryptedDeviceName = storage.encryptedDeviceName;
+            deviceId = storage.deviceId;
+            isMultiDevice = storage.isMultiDevice;
+            password = storage.password;
+            setAccountData(aciAccountData, storage.aciAccountData, ACI::parseOrThrow);
+            setAccountData(pniAccountData, storage.pniAccountData, PNI::parseOrThrow);
+            registrationLockPin = storage.registrationLockPin;
+            final var base64 = Base64.getDecoder();
+            if (storage.pinMasterKey != null) {
+                pinMasterKey = new MasterKey(base64.decode(storage.pinMasterKey));
+            }
+            if (storage.storageKey != null) {
+                storageKey = new StorageKey(base64.decode(storage.storageKey));
+            }
+            if (storage.accountEntropyPool != null) {
+                accountEntropyPool = new AccountEntropyPool(storage.accountEntropyPool);
+            }
+            if (storage.authCredentialSalt != null) {
+                authCredentialSalt = base64.decode(storage.authCredentialSalt);
+            }
+            if (storage.mediaRootBackupKey != null) {
+                mediaRootBackupKey = new MediaRootBackupKey(base64.decode(storage.mediaRootBackupKey));
+            }
+            if (storage.profileKey != null) {
+                try {
+                    profileKey = new ProfileKey(base64.decode(storage.profileKey));
+                } catch (InvalidInputException e) {
+                    throw new IOException(
+                            "Config file contains an invalid profileKey, needs to be base64 encoded array of 32 bytes",
+                            e);
+                }
+            }
+            if (storage.usernameLinkEntropy != null && storage.usernameLinkServerId != null) {
+                usernameLink = new UsernameLinkComponents(base64.decode(storage.usernameLinkEntropy),
+                        UUID.fromString(storage.usernameLinkServerId));
+            }
+        }
+
+        if (migratedLegacyConfig) {
+            save();
+        }
+    }
+
+    private <SERVICE_ID extends ServiceId> void setAccountData(
+            AccountData<SERVICE_ID> accountData,
+            Storage.AccountData storage,
+            Function<String, SERVICE_ID> serviceIdParser
+    ) throws IOException {
+        if (storage.serviceId != null) {
+            try {
+                accountData.setServiceId(serviceIdParser.apply(storage.serviceId));
+            } catch (IllegalArgumentException e) {
+                throw new IOException("Config file contains an invalid serviceId, needs to be a valid UUID", e);
+            }
+        }
+        accountData.setLocalRegistrationId(storage.registrationId);
+        if (storage.identityPrivateKey != null && storage.identityPublicKey != null) {
+            final var base64 = Base64.getDecoder();
+            final var publicKeyBytes = base64.decode(storage.identityPublicKey);
+            final var privateKeyBytes = base64.decode(storage.identityPrivateKey);
+            final var keyPair = KeyUtils.getIdentityKeyPair(publicKeyBytes, privateKeyBytes);
+            accountData.setIdentityKeyPair(keyPair);
+        }
+        accountData.preKeyMetadata.nextPreKeyId = storage.nextPreKeyId;
+        accountData.preKeyMetadata.nextSignedPreKeyId = storage.nextSignedPreKeyId;
+        accountData.preKeyMetadata.activeSignedPreKeyId = storage.activeSignedPreKeyId;
+        accountData.preKeyMetadata.nextKyberPreKeyId = storage.nextKyberPreKeyId;
+        accountData.preKeyMetadata.activeLastResortKyberPreKeyId = storage.activeLastResortKyberPreKeyId;
+    }
+
+    private void loadLegacyFile(final File userPath, final JsonNode rootNode) throws IOException {
+        number = Utils.getNotNullNode(rootNode, "username").asText();
         if (rootNode.hasNonNull("password")) {
             password = rootNode.get("password").asText();
         }
+        if (password == null) {
+            password = KeyUtils.createPassword();
+        }
+
+        if (rootNode.hasNonNull("serviceEnvironment")) {
+            serviceEnvironment = ServiceEnvironment.valueOf(rootNode.get("serviceEnvironment").asText());
+        }
+        if (serviceEnvironment == null) {
+            serviceEnvironment = ServiceEnvironment.LIVE;
+        }
         registered = Utils.getNotNullNode(rootNode, "registered").asBoolean();
+        if (rootNode.hasNonNull("usernameIdentifier")) {
+            username = rootNode.get("usernameIdentifier").asText();
+            if ("".equals(username)) {
+                username = null;
+            }
+        }
         if (rootNode.hasNonNull("uuid")) {
             try {
-                aci = ACI.parseOrThrow(rootNode.get("uuid").asText());
+                aciAccountData.setServiceId(ACI.parseOrThrow(rootNode.get("uuid").asText()));
             } catch (IllegalArgumentException e) {
-                throw new IOException("Config file contains an invalid uuid, needs to be a valid UUID", e);
+                throw new IOException("Config file contains an invalid aci/uuid, needs to be a valid UUID", e);
             }
+        }
+        if (rootNode.hasNonNull("pni")) {
+            try {
+                pniAccountData.setServiceId(PNI.parseOrThrow(rootNode.get("pni").asText()));
+            } catch (IllegalArgumentException e) {
+                throw new IOException("Config file contains an invalid pni, needs to be a valid UUID", e);
+            }
+        }
+        if (rootNode.hasNonNull("sessionId")) {
+            getKeyValueStore().storeEntry(verificationSessionId, rootNode.get("sessionId").asText());
+        }
+        if (rootNode.hasNonNull("sessionNumber")) {
+            getKeyValueStore().storeEntry(verificationSessionNumber, rootNode.get("sessionNumber").asText());
         }
         if (rootNode.hasNonNull("deviceName")) {
             encryptedDeviceName = rootNode.get("deviceName").asText();
@@ -445,17 +716,27 @@ public class SignalAccount implements Closeable {
             isMultiDevice = rootNode.get("isMultiDevice").asBoolean();
         }
         if (rootNode.hasNonNull("lastReceiveTimestamp")) {
-            lastReceiveTimestamp = rootNode.get("lastReceiveTimestamp").asLong();
+            setLastReceiveTimestamp(rootNode.get("lastReceiveTimestamp").asLong());
         }
         int registrationId = 0;
         if (rootNode.hasNonNull("registrationId")) {
             registrationId = rootNode.get("registrationId").asInt();
         }
-        IdentityKeyPair identityKeyPair = null;
+        if (rootNode.hasNonNull("pniRegistrationId")) {
+            pniAccountData.setLocalRegistrationId(rootNode.get("pniRegistrationId").asInt());
+        } else {
+            pniAccountData.setLocalRegistrationId(KeyHelper.generateRegistrationId(false));
+        }
+        IdentityKeyPair aciIdentityKeyPair = null;
         if (rootNode.hasNonNull("identityPrivateKey") && rootNode.hasNonNull("identityKey")) {
             final var publicKeyBytes = Base64.getDecoder().decode(rootNode.get("identityKey").asText());
             final var privateKeyBytes = Base64.getDecoder().decode(rootNode.get("identityPrivateKey").asText());
-            identityKeyPair = KeyUtils.getIdentityKeyPair(publicKeyBytes, privateKeyBytes);
+            aciIdentityKeyPair = KeyUtils.getIdentityKeyPair(publicKeyBytes, privateKeyBytes);
+        }
+        if (rootNode.hasNonNull("pniIdentityPrivateKey") && rootNode.hasNonNull("pniIdentityKey")) {
+            final var publicKeyBytes = Base64.getDecoder().decode(rootNode.get("pniIdentityKey").asText());
+            final var privateKeyBytes = Base64.getDecoder().decode(rootNode.get("pniIdentityPrivateKey").asText());
+            pniAccountData.setIdentityKeyPair(KeyUtils.getIdentityKeyPair(publicKeyBytes, privateKeyBytes));
         }
 
         if (rootNode.hasNonNull("registrationLockPin")) {
@@ -468,17 +749,59 @@ public class SignalAccount implements Closeable {
             storageKey = new StorageKey(Base64.getDecoder().decode(rootNode.get("storageKey").asText()));
         }
         if (rootNode.hasNonNull("storageManifestVersion")) {
-            storageManifestVersion = rootNode.get("storageManifestVersion").asLong();
+            getKeyValueStore().storeEntry(storageManifestVersion, rootNode.get("storageManifestVersion").asLong());
         }
         if (rootNode.hasNonNull("preKeyIdOffset")) {
-            preKeyIdOffset = rootNode.get("preKeyIdOffset").asInt(0);
+            aciAccountData.preKeyMetadata.nextPreKeyId = rootNode.get("preKeyIdOffset").asInt(1);
         } else {
-            preKeyIdOffset = 0;
+            aciAccountData.preKeyMetadata.nextPreKeyId = getRandomPreKeyIdOffset();
         }
         if (rootNode.hasNonNull("nextSignedPreKeyId")) {
-            nextSignedPreKeyId = rootNode.get("nextSignedPreKeyId").asInt();
+            aciAccountData.preKeyMetadata.nextSignedPreKeyId = rootNode.get("nextSignedPreKeyId").asInt(1);
         } else {
-            nextSignedPreKeyId = 0;
+            aciAccountData.preKeyMetadata.nextSignedPreKeyId = getRandomPreKeyIdOffset();
+        }
+        if (rootNode.hasNonNull("activeSignedPreKeyId")) {
+            aciAccountData.preKeyMetadata.activeSignedPreKeyId = rootNode.get("activeSignedPreKeyId").asInt(-1);
+        } else {
+            aciAccountData.preKeyMetadata.activeSignedPreKeyId = -1;
+        }
+        if (rootNode.hasNonNull("pniPreKeyIdOffset")) {
+            pniAccountData.preKeyMetadata.nextPreKeyId = rootNode.get("pniPreKeyIdOffset").asInt(1);
+        } else {
+            pniAccountData.preKeyMetadata.nextPreKeyId = getRandomPreKeyIdOffset();
+        }
+        if (rootNode.hasNonNull("pniNextSignedPreKeyId")) {
+            pniAccountData.preKeyMetadata.nextSignedPreKeyId = rootNode.get("pniNextSignedPreKeyId").asInt(1);
+        } else {
+            pniAccountData.preKeyMetadata.nextSignedPreKeyId = getRandomPreKeyIdOffset();
+        }
+        if (rootNode.hasNonNull("pniActiveSignedPreKeyId")) {
+            pniAccountData.preKeyMetadata.activeSignedPreKeyId = rootNode.get("pniActiveSignedPreKeyId").asInt(-1);
+        } else {
+            pniAccountData.preKeyMetadata.activeSignedPreKeyId = -1;
+        }
+        if (rootNode.hasNonNull("kyberPreKeyIdOffset")) {
+            aciAccountData.preKeyMetadata.nextKyberPreKeyId = rootNode.get("kyberPreKeyIdOffset").asInt(1);
+        } else {
+            aciAccountData.preKeyMetadata.nextKyberPreKeyId = getRandomPreKeyIdOffset();
+        }
+        if (rootNode.hasNonNull("activeLastResortKyberPreKeyId")) {
+            aciAccountData.preKeyMetadata.activeLastResortKyberPreKeyId = rootNode.get("activeLastResortKyberPreKeyId")
+                    .asInt(-1);
+        } else {
+            aciAccountData.preKeyMetadata.activeLastResortKyberPreKeyId = -1;
+        }
+        if (rootNode.hasNonNull("pniKyberPreKeyIdOffset")) {
+            pniAccountData.preKeyMetadata.nextKyberPreKeyId = rootNode.get("pniKyberPreKeyIdOffset").asInt(1);
+        } else {
+            pniAccountData.preKeyMetadata.nextKyberPreKeyId = getRandomPreKeyIdOffset();
+        }
+        if (rootNode.hasNonNull("pniActiveLastResortKyberPreKeyId")) {
+            pniAccountData.preKeyMetadata.activeLastResortKyberPreKeyId = rootNode.get(
+                    "pniActiveLastResortKyberPreKeyId").asInt(-1);
+        } else {
+            pniAccountData.preKeyMetadata.activeLastResortKyberPreKeyId = -1;
         }
         if (rootNode.hasNonNull("profileKey")) {
             try {
@@ -489,122 +812,167 @@ public class SignalAccount implements Closeable {
                         e);
             }
         }
+        if (profileKey == null) {
+            // Old config file, creating new profile key
+            setProfileKey(KeyUtils.createProfileKey());
+        }
 
-        var migratedLegacyConfig = false;
+        if (previousStorageVersion < 5) {
+            final var legacyRecipientsStoreFile = new File(userPath, "recipients-store");
+            if (legacyRecipientsStoreFile.exists()) {
+                LegacyRecipientStore2.migrate(legacyRecipientsStoreFile, getRecipientStore());
+            }
+        }
+        if (previousStorageVersion < 6) {
+            getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
+        }
+        final var legacyAciPreKeysPath = new File(userPath, "pre-keys");
+        if (legacyAciPreKeysPath.exists()) {
+            LegacyPreKeyStore.migrate(legacyAciPreKeysPath, aciAccountData.getPreKeyStore());
+        }
+        final var legacyPniPreKeysPath = new File(userPath, "pre-keys-pni");
+        if (legacyPniPreKeysPath.exists()) {
+            LegacyPreKeyStore.migrate(legacyPniPreKeysPath, pniAccountData.getPreKeyStore());
+        }
+        final var legacyAciSignedPreKeysPath = new File(userPath, "signed-pre-keys");
+        if (legacyAciSignedPreKeysPath.exists()) {
+            LegacySignedPreKeyStore.migrate(legacyAciSignedPreKeysPath, aciAccountData.getSignedPreKeyStore());
+        }
+        final var legacyPniSignedPreKeysPath = new File(userPath, "signed-pre-keys-pni");
+        if (legacyPniSignedPreKeysPath.exists()) {
+            LegacySignedPreKeyStore.migrate(legacyPniSignedPreKeysPath, pniAccountData.getSignedPreKeyStore());
+        }
+        final var legacySessionsPath = new File(userPath, "sessions");
+        if (legacySessionsPath.exists()) {
+            LegacySessionStore.migrate(legacySessionsPath,
+                    getRecipientResolver(),
+                    getRecipientAddressResolver(),
+                    aciAccountData.getSessionStore());
+        }
+        final var legacyIdentitiesPath = new File(userPath, "identities");
+        if (legacyIdentitiesPath.exists()) {
+            LegacyIdentityKeyStore.migrate(legacyIdentitiesPath,
+                    getRecipientResolver(),
+                    getRecipientAddressResolver(),
+                    getIdentityKeyStore());
+        }
         final var legacySignalProtocolStore = rootNode.hasNonNull("axolotlStore")
                 ? jsonProcessor.convertValue(Utils.getNotNullNode(rootNode, "axolotlStore"),
                 LegacyJsonSignalProtocolStore.class)
                 : null;
         if (legacySignalProtocolStore != null && legacySignalProtocolStore.getLegacyIdentityKeyStore() != null) {
-            identityKeyPair = legacySignalProtocolStore.getLegacyIdentityKeyStore().getIdentityKeyPair();
+            aciIdentityKeyPair = legacySignalProtocolStore.getLegacyIdentityKeyStore().getIdentityKeyPair();
             registrationId = legacySignalProtocolStore.getLegacyIdentityKeyStore().getLocalRegistrationId();
-            migratedLegacyConfig = true;
         }
 
-        this.dataPath = dataPath;
-        this.identityKeyPair = identityKeyPair;
-        this.localRegistrationId = registrationId;
-        this.trustNewIdentity = trustNewIdentity;
+        this.aciAccountData.setIdentityKeyPair(aciIdentityKeyPair);
+        this.aciAccountData.setLocalRegistrationId(registrationId);
 
-        migratedLegacyConfig = loadLegacyStores(rootNode, legacySignalProtocolStore) || migratedLegacyConfig;
+        loadLegacyStores(rootNode, legacySignalProtocolStore);
 
+        final var legacySenderKeysPath = new File(userPath, "sender-keys");
+        if (legacySenderKeysPath.exists()) {
+            LegacySenderKeyRecordStore.migrate(legacySenderKeysPath,
+                    getRecipientResolver(),
+                    getRecipientAddressResolver(),
+                    getSenderKeyStore());
+        }
+        final var legacySenderKeysSharedPath = new File(userPath, "shared-sender-keys-store");
+        if (legacySenderKeysSharedPath.exists()) {
+            LegacySenderKeySharedStore.migrate(legacySenderKeysSharedPath,
+                    getRecipientResolver(),
+                    getRecipientAddressResolver(),
+                    getSenderKeyStore());
+        }
         if (rootNode.hasNonNull("groupStore")) {
-            groupStoreStorage = jsonProcessor.convertValue(rootNode.get("groupStore"), GroupStore.Storage.class);
-            groupStore = GroupStore.fromStorage(groupStoreStorage,
-                    getGroupCachePath(dataPath, account),
-                    getRecipientStore(),
-                    this::saveGroupStore);
-        } else {
-            groupStore = new GroupStore(getGroupCachePath(dataPath, account),
-                    getRecipientStore(),
-                    this::saveGroupStore);
+            final var groupStoreStorage = jsonProcessor.convertValue(rootNode.get("groupStore"),
+                    LegacyGroupStore.Storage.class);
+            LegacyGroupStore.migrate(groupStoreStorage,
+                    new File(userPath, "group-cache"),
+                    getRecipientResolver(),
+                    getGroupStore());
         }
 
         if (rootNode.hasNonNull("stickerStore")) {
-            stickerStoreStorage = jsonProcessor.convertValue(rootNode.get("stickerStore"), StickerStore.Storage.class);
-            stickerStore = StickerStore.fromStorage(stickerStoreStorage, this::saveStickerStore);
-        } else {
-            stickerStore = new StickerStore(this::saveStickerStore);
+            final var storage = jsonProcessor.convertValue(rootNode.get("stickerStore"),
+                    LegacyStickerStore.Storage.class);
+            LegacyStickerStore.migrate(storage, getStickerStore());
         }
 
         if (rootNode.hasNonNull("configurationStore")) {
-            configurationStoreStorage = jsonProcessor.convertValue(rootNode.get("configurationStore"),
-                    ConfigurationStore.Storage.class);
-            configurationStore = ConfigurationStore.fromStorage(configurationStoreStorage,
-                    this::saveConfigurationStore);
-        } else {
-            configurationStore = new ConfigurationStore(this::saveConfigurationStore);
+            final var configurationStoreStorage = jsonProcessor.convertValue(rootNode.get("configurationStore"),
+                    LegacyConfigurationStore.Storage.class);
+            LegacyConfigurationStore.migrate(configurationStoreStorage, getConfigurationStore());
         }
 
-        migratedLegacyConfig = loadLegacyThreadStore(rootNode) || migratedLegacyConfig;
-
-        if (migratedLegacyConfig) {
-            save();
-        }
+        loadLegacyThreadStore(rootNode);
     }
 
-    private boolean loadLegacyStores(
-            final JsonNode rootNode, final LegacyJsonSignalProtocolStore legacySignalProtocolStore
+    private void loadLegacyStores(
+            final JsonNode rootNode,
+            final LegacyJsonSignalProtocolStore legacySignalProtocolStore
     ) {
-        var migrated = false;
         var legacyRecipientStoreNode = rootNode.get("recipientStore");
         if (legacyRecipientStoreNode != null) {
             logger.debug("Migrating legacy recipient store.");
             var legacyRecipientStore = jsonProcessor.convertValue(legacyRecipientStoreNode, LegacyRecipientStore.class);
             if (legacyRecipientStore != null) {
-                getRecipientStore().resolveRecipientsTrusted(legacyRecipientStore.getAddresses());
+                legacyRecipientStore.getAddresses()
+                        .forEach(recipient -> getRecipientStore().resolveRecipientTrusted(recipient));
             }
-            getSelfRecipientId();
-            migrated = true;
+            getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
         }
 
         if (legacySignalProtocolStore != null && legacySignalProtocolStore.getLegacyPreKeyStore() != null) {
             logger.debug("Migrating legacy pre key store.");
+            aciAccountData.getPreKeyStore().removeAllPreKeys();
             for (var entry : legacySignalProtocolStore.getLegacyPreKeyStore().getPreKeys().entrySet()) {
                 try {
-                    getPreKeyStore().storePreKey(entry.getKey(), new PreKeyRecord(entry.getValue()));
-                } catch (IOException e) {
+                    aciAccountData.getPreKeyStore().storePreKey(entry.getKey(), new PreKeyRecord(entry.getValue()));
+                } catch (InvalidMessageException e) {
                     logger.warn("Failed to migrate pre key, ignoring", e);
                 }
             }
-            migrated = true;
         }
 
         if (legacySignalProtocolStore != null && legacySignalProtocolStore.getLegacySignedPreKeyStore() != null) {
             logger.debug("Migrating legacy signed pre key store.");
+            aciAccountData.getSignedPreKeyStore().removeAllSignedPreKeys();
             for (var entry : legacySignalProtocolStore.getLegacySignedPreKeyStore().getSignedPreKeys().entrySet()) {
                 try {
-                    getSignedPreKeyStore().storeSignedPreKey(entry.getKey(), new SignedPreKeyRecord(entry.getValue()));
-                } catch (IOException e) {
+                    aciAccountData.getSignedPreKeyStore()
+                            .storeSignedPreKey(entry.getKey(), new SignedPreKeyRecord(entry.getValue()));
+                } catch (InvalidMessageException e) {
                     logger.warn("Failed to migrate signed pre key, ignoring", e);
                 }
             }
-            migrated = true;
         }
 
         if (legacySignalProtocolStore != null && legacySignalProtocolStore.getLegacySessionStore() != null) {
             logger.debug("Migrating legacy session store.");
             for (var session : legacySignalProtocolStore.getLegacySessionStore().getSessions()) {
                 try {
-                    getSessionStore().storeSession(new SignalProtocolAddress(session.address.getIdentifier(),
-                            session.deviceId), new SessionRecord(session.sessionRecord));
+                    aciAccountData.getSessionStore()
+                            .storeSession(new SignalProtocolAddress(session.address.getIdentifier(), session.deviceId),
+                                    new SessionRecord(session.sessionRecord));
                 } catch (Exception e) {
                     logger.warn("Failed to migrate session, ignoring", e);
                 }
             }
-            migrated = true;
         }
 
         if (legacySignalProtocolStore != null && legacySignalProtocolStore.getLegacyIdentityKeyStore() != null) {
             logger.debug("Migrating legacy identity session store.");
             for (var identity : legacySignalProtocolStore.getLegacyIdentityKeyStore().getIdentities()) {
-                RecipientId recipientId = getRecipientStore().resolveRecipientTrusted(identity.getAddress());
-                getIdentityKeyStore().saveIdentity(recipientId, identity.getIdentityKey(), identity.getDateAdded());
-                getIdentityKeyStore().setIdentityTrustLevel(recipientId,
+                if (identity.getAddress().serviceId().isEmpty()) {
+                    continue;
+                }
+                final var serviceId = identity.getAddress().serviceId().get();
+                getIdentityKeyStore().saveIdentity(serviceId, identity.getIdentityKey());
+                getIdentityKeyStore().setIdentityTrustLevel(serviceId,
                         identity.getIdentityKey(),
                         identity.getTrustLevel());
             }
-            migrated = true;
         }
 
         if (rootNode.hasNonNull("contactStore")) {
@@ -613,12 +981,24 @@ public class SignalAccount implements Closeable {
             final var contactStore = jsonProcessor.convertValue(contactStoreNode, LegacyJsonContactsStore.class);
             for (var contact : contactStore.getContacts()) {
                 final var recipientId = getRecipientStore().resolveRecipientTrusted(contact.getAddress());
-                getRecipientStore().storeContact(recipientId,
+                getContactStore().storeContact(recipientId,
                         new Contact(contact.name,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
                                 contact.color,
                                 contact.messageExpirationTime,
+                                1,
+                                0,
+                                false,
                                 contact.blocked,
-                                contact.archived));
+                                0,
+                                contact.archived,
+                                false,
+                                false,
+                                null));
 
                 // Store profile keys only in profile store
                 var profileKeyString = contact.profileKey;
@@ -632,7 +1012,6 @@ public class SignalAccount implements Closeable {
                     }
                 }
             }
-            migrated = true;
         }
 
         if (rootNode.hasNonNull("profileStore")) {
@@ -640,44 +1019,39 @@ public class SignalAccount implements Closeable {
             var profileStoreNode = rootNode.get("profileStore");
             final var legacyProfileStore = jsonProcessor.convertValue(profileStoreNode, LegacyProfileStore.class);
             for (var profileEntry : legacyProfileStore.getProfileEntries()) {
-                var recipientId = getRecipientStore().resolveRecipient(profileEntry.getAddress());
-                getRecipientStore().storeProfileKeyCredential(recipientId, profileEntry.getProfileKeyCredential());
-                getRecipientStore().storeProfileKey(recipientId, profileEntry.getProfileKey());
-                final var profile = profileEntry.getProfile();
+                var recipientId = getRecipientResolver().resolveRecipient(profileEntry.address());
+                // Not migrating profile key credential here, it was changed to expiring profile key credentials
+                getProfileStore().storeProfileKey(recipientId, profileEntry.profileKey());
+                final var profile = profileEntry.profile();
                 if (profile != null) {
                     final var capabilities = new HashSet<Profile.Capability>();
                     if (profile.getCapabilities() != null) {
-                        if (profile.getCapabilities().gv1Migration) {
-                            capabilities.add(Profile.Capability.gv1Migration);
-                        }
-                        if (profile.getCapabilities().gv2) {
-                            capabilities.add(Profile.Capability.gv2);
-                        }
                         if (profile.getCapabilities().storage) {
                             capabilities.add(Profile.Capability.storage);
                         }
                     }
-                    final var newProfile = new Profile(profileEntry.getLastUpdateTimestamp(),
+                    final var newProfile = new Profile(profileEntry.lastUpdateTimestamp(),
                             profile.getGivenName(),
                             profile.getFamilyName(),
                             profile.getAbout(),
                             profile.getAboutEmoji(),
+                            null,
                             null,
                             profile.isUnrestrictedUnidentifiedAccess()
                                     ? Profile.UnidentifiedAccessMode.UNRESTRICTED
                                     : profile.getUnidentifiedAccess() != null
                                             ? Profile.UnidentifiedAccessMode.ENABLED
                                             : Profile.UnidentifiedAccessMode.DISABLED,
-                            capabilities);
-                    getRecipientStore().storeProfile(recipientId, newProfile);
+                            capabilities,
+                            null,
+                            List.of());
+                    getProfileStore().storeProfile(recipientId, newProfile);
                 }
             }
         }
-
-        return migrated;
     }
 
-    private boolean loadLegacyThreadStore(final JsonNode rootNode) {
+    private void loadLegacyThreadStore(final JsonNode rootNode) {
         var threadStoreNode = rootNode.get("threadStore");
         if (threadStoreNode != null && !threadStoreNode.isNull()) {
             var threadStore = jsonProcessor.convertValue(threadStoreNode, LegacyJsonThreadStore.class);
@@ -687,80 +1061,58 @@ public class SignalAccount implements Closeable {
                     continue;
                 }
                 try {
-                    if (UuidUtil.isUuid(thread.id) || thread.id.startsWith("+")) {
-                        final var recipientId = getRecipientStore().resolveRecipient(thread.id);
-                        var contact = getRecipientStore().getContact(recipientId);
+                    if (UuidUtil.INSTANCE.isUuid(thread.id) || thread.id.startsWith("+")) {
+                        final var recipientId = getRecipientResolver().resolveRecipient(thread.id);
+                        var contact = getContactStore().getContact(recipientId);
                         if (contact != null) {
-                            getRecipientStore().storeContact(recipientId,
+                            getContactStore().storeContact(recipientId,
                                     Contact.newBuilder(contact)
                                             .withMessageExpirationTime(thread.messageExpirationTime)
+                                            .withMessageExpirationTimeVersion(1)
                                             .build());
                         }
                     } else {
-                        var groupInfo = groupStore.getGroup(GroupId.fromBase64(thread.id));
+                        var groupInfo = getGroupStore().getGroup(GroupId.fromBase64(thread.id));
                         if (groupInfo instanceof GroupInfoV1) {
                             ((GroupInfoV1) groupInfo).messageExpirationTime = thread.messageExpirationTime;
-                            groupStore.updateGroup(groupInfo);
+                            getGroupStore().updateGroup(groupInfo);
                         }
                     }
                 } catch (Exception e) {
                     logger.warn("Failed to read legacy thread info: {}", e.getMessage());
                 }
             }
-            return true;
         }
-
-        return false;
-    }
-
-    private void saveStickerStore(StickerStore.Storage storage) {
-        this.stickerStoreStorage = storage;
-        save();
-    }
-
-    private void saveGroupStore(GroupStore.Storage storage) {
-        this.groupStoreStorage = storage;
-        save();
-    }
-
-    private void saveConfigurationStore(ConfigurationStore.Storage storage) {
-        this.configurationStoreStorage = storage;
-        save();
     }
 
     private void save() {
         synchronized (fileChannel) {
-            var rootNode = jsonProcessor.createObjectNode();
-            rootNode.put("version", CURRENT_STORAGE_VERSION)
-                    .put("username", account)
-                    .put("uuid", aci == null ? null : aci.toString())
-                    .put("deviceName", encryptedDeviceName)
-                    .put("deviceId", deviceId)
-                    .put("isMultiDevice", isMultiDevice)
-                    .put("lastReceiveTimestamp", lastReceiveTimestamp)
-                    .put("password", password)
-                    .put("registrationId", localRegistrationId)
-                    .put("identityPrivateKey",
-                            Base64.getEncoder().encodeToString(identityKeyPair.getPrivateKey().serialize()))
-                    .put("identityKey", Base64.getEncoder().encodeToString(identityKeyPair.getPublicKey().serialize()))
-                    .put("registrationLockPin", registrationLockPin)
-                    .put("pinMasterKey",
-                            pinMasterKey == null ? null : Base64.getEncoder().encodeToString(pinMasterKey.serialize()))
-                    .put("storageKey",
-                            storageKey == null ? null : Base64.getEncoder().encodeToString(storageKey.serialize()))
-                    .put("storageManifestVersion", storageManifestVersion == -1 ? null : storageManifestVersion)
-                    .put("preKeyIdOffset", preKeyIdOffset)
-                    .put("nextSignedPreKeyId", nextSignedPreKeyId)
-                    .put("profileKey",
-                            profileKey == null ? null : Base64.getEncoder().encodeToString(profileKey.serialize()))
-                    .put("registered", registered)
-                    .putPOJO("groupStore", groupStoreStorage)
-                    .putPOJO("stickerStore", stickerStoreStorage)
-                    .putPOJO("configurationStore", configurationStoreStorage);
+            final var base64 = Base64.getEncoder();
+            final var storage = new Storage(CURRENT_STORAGE_VERSION,
+                    System.currentTimeMillis(),
+                    serviceEnvironment.name(),
+                    registered,
+                    number,
+                    username,
+                    encryptedDeviceName,
+                    deviceId,
+                    isMultiDevice,
+                    password,
+                    Storage.AccountData.from(aciAccountData),
+                    Storage.AccountData.from(pniAccountData),
+                    registrationLockPin,
+                    pinMasterKey == null ? null : base64.encodeToString(pinMasterKey.serialize()),
+                    storageKey == null ? null : base64.encodeToString(storageKey.serialize()),
+                    accountEntropyPool == null ? null : accountEntropyPool.getValue(),
+                    authCredentialSalt == null ? null : base64.encodeToString(authCredentialSalt),
+                    mediaRootBackupKey == null ? null : base64.encodeToString(mediaRootBackupKey.getValue()),
+                    profileKey == null ? null : base64.encodeToString(profileKey.serialize()),
+                    usernameLink == null ? null : base64.encodeToString(usernameLink.getEntropy()),
+                    usernameLink == null ? null : usernameLink.getServerId().toString());
             try {
                 try (var output = new ByteArrayOutputStream()) {
                     // Write to memory first to prevent corrupting the file in case of serialization errors
-                    jsonProcessor.writeValue(output, rootNode);
+                    jsonProcessor.writeValue(output, storage);
                     var input = new ByteArrayInputStream(output.toByteArray());
                     fileChannel.position(0);
                     input.transferTo(Channels.newOutputStream(fileChannel));
@@ -768,93 +1120,262 @@ public class SignalAccount implements Closeable {
                     fileChannel.force(false);
                 }
             } catch (Exception e) {
-                logger.error("Error saving file: {}", e.getMessage());
+                logger.error("Error saving file: {}", e.getMessage(), e);
             }
         }
     }
 
     private static Pair<FileChannel, FileLock> openFileChannel(File fileName, boolean waitForLock) throws IOException {
         var fileChannel = new RandomAccessFile(fileName, "rw").getChannel();
-        var lock = fileChannel.tryLock();
-        if (lock == null) {
-            if (!waitForLock) {
-                logger.debug("Config file is in use by another instance.");
-                throw new IOException("Config file is in use by another instance.");
+        try {
+            var lock = fileChannel.tryLock();
+            if (lock == null) {
+                if (!waitForLock) {
+                    logger.debug("Config file is in use by another instance.");
+                    throw new IOException("Config file is in use by another instance.");
+                }
+                logger.info("Config file is in use by another instance, waiting…");
+                lock = fileChannel.lock();
+                logger.info("Config file lock acquired.");
             }
-            logger.info("Config file is in use by another instance, waiting…");
-            lock = fileChannel.lock();
-            logger.info("Config file lock acquired.");
+            final var result = new Pair<>(fileChannel, lock);
+            fileChannel = null;
+            return result;
+        } finally {
+            if (fileChannel != null) {
+                fileChannel.close();
+            }
         }
-        return new Pair<>(fileChannel, lock);
     }
 
-    public void addPreKeys(List<PreKeyRecord> records) {
+    private void clearAllPreKeys() {
+        clearAllPreKeys(ServiceIdType.ACI);
+        clearAllPreKeys(ServiceIdType.PNI);
+    }
+
+    private void initAllPreKeyIds() {
+        resetPreKeyOffsets(ServiceIdType.ACI);
+        resetPreKeyOffsets(ServiceIdType.PNI);
+        resetKyberPreKeyOffsets(ServiceIdType.ACI);
+        resetKyberPreKeyOffsets(ServiceIdType.PNI);
+    }
+
+    private void clearAllPreKeys(ServiceIdType serviceIdType) {
+        final var accountData = getAccountData(serviceIdType);
+        resetPreKeyOffsets(serviceIdType);
+        resetKyberPreKeyOffsets(serviceIdType);
+        accountData.getPreKeyStore().removeAllPreKeys();
+        accountData.getSignedPreKeyStore().removeAllSignedPreKeys();
+        accountData.getKyberPreKeyStore().removeAllKyberPreKeys();
+        save();
+    }
+
+    private void setPreKeys(ServiceIdType serviceIdType, PreKeyCollection preKeyCollection) {
+        final var accountData = getAccountData(serviceIdType);
+        final var preKeyMetadata = accountData.getPreKeyMetadata();
+        preKeyMetadata.nextSignedPreKeyId = preKeyCollection.getSignedPreKey().getId();
+        preKeyMetadata.nextKyberPreKeyId = preKeyCollection.getLastResortKyberPreKey().getId();
+
+        accountData.getPreKeyStore().removeAllPreKeys();
+        accountData.getSignedPreKeyStore().removeAllSignedPreKeys();
+        accountData.getKyberPreKeyStore().removeAllKyberPreKeys();
+
+        addSignedPreKey(serviceIdType, preKeyCollection.getSignedPreKey());
+        addLastResortKyberPreKey(serviceIdType, preKeyCollection.getLastResortKyberPreKey());
+
+        save();
+    }
+
+    public void resetPreKeyOffsets(final ServiceIdType serviceIdType) {
+        final var preKeyMetadata = getAccountData(serviceIdType).getPreKeyMetadata();
+        preKeyMetadata.nextPreKeyId = getRandomPreKeyIdOffset();
+        preKeyMetadata.nextSignedPreKeyId = getRandomPreKeyIdOffset();
+        preKeyMetadata.activeSignedPreKeyId = -1;
+        save();
+    }
+
+    private static int getRandomPreKeyIdOffset() {
+        return KeyUtils.getRandomInt(PREKEY_MAXIMUM_ID);
+    }
+
+    public void addPreKeys(ServiceIdType serviceIdType, List<PreKeyRecord> records) {
+        final var accountData = getAccountData(serviceIdType);
+        final var preKeyMetadata = accountData.getPreKeyMetadata();
+        logger.debug("Adding {} {} pre keys with offset {}",
+                records.size(),
+                serviceIdType,
+                preKeyMetadata.nextPreKeyId);
+        accountData.getSignalServiceAccountDataStore()
+                .markAllOneTimeEcPreKeysStaleIfNecessary(System.currentTimeMillis());
         for (var record : records) {
-            if (preKeyIdOffset != record.getId()) {
-                logger.error("Invalid pre key id {}, expected {}", record.getId(), preKeyIdOffset);
+            if (preKeyMetadata.nextPreKeyId != record.getId()) {
+                logger.error("Invalid pre key id {}, expected {}", record.getId(), preKeyMetadata.nextPreKeyId);
                 throw new AssertionError("Invalid pre key id");
             }
-            getPreKeyStore().storePreKey(record.getId(), record);
-            preKeyIdOffset = (preKeyIdOffset + 1) % Medium.MAX_VALUE;
+            accountData.getPreKeyStore().storePreKey(record.getId(), record);
+            preKeyMetadata.nextPreKeyId = (preKeyMetadata.nextPreKeyId + 1) % PREKEY_MAXIMUM_ID;
         }
         save();
     }
 
-    public void addSignedPreKey(SignedPreKeyRecord record) {
-        if (nextSignedPreKeyId != record.getId()) {
-            logger.error("Invalid signed pre key id {}, expected {}", record.getId(), nextSignedPreKeyId);
+    public void addSignedPreKey(ServiceIdType serviceIdType, SignedPreKeyRecord record) {
+        final var accountData = getAccountData(serviceIdType);
+        final var preKeyMetadata = accountData.getPreKeyMetadata();
+        logger.debug("Adding {} signed pre key with offset {}", serviceIdType, preKeyMetadata.nextSignedPreKeyId);
+        if (preKeyMetadata.nextSignedPreKeyId != record.getId()) {
+            logger.error("Invalid signed pre key id {}, expected {}",
+                    record.getId(),
+                    preKeyMetadata.nextSignedPreKeyId);
             throw new AssertionError("Invalid signed pre key id");
         }
-        getSignedPreKeyStore().storeSignedPreKey(record.getId(), record);
-        nextSignedPreKeyId = (nextSignedPreKeyId + 1) % Medium.MAX_VALUE;
+        accountData.getSignedPreKeyStore().storeSignedPreKey(record.getId(), record);
+        preKeyMetadata.nextSignedPreKeyId = (preKeyMetadata.nextSignedPreKeyId + 1) % PREKEY_MAXIMUM_ID;
+        preKeyMetadata.activeSignedPreKeyId = record.getId();
         save();
     }
 
-    public SignalProtocolStore getSignalProtocolStore() {
-        return getOrCreate(() -> signalProtocolStore,
-                () -> signalProtocolStore = new SignalProtocolStore(getPreKeyStore(),
-                        getSignedPreKeyStore(),
-                        getSessionStore(),
-                        getIdentityKeyStore(),
-                        getSenderKeyStore(),
-                        this::isMultiDevice));
+    public void resetKyberPreKeyOffsets(final ServiceIdType serviceIdType) {
+        final var preKeyMetadata = getAccountData(serviceIdType).getPreKeyMetadata();
+        preKeyMetadata.nextKyberPreKeyId = getRandomPreKeyIdOffset();
+        preKeyMetadata.activeLastResortKyberPreKeyId = -1;
+        save();
     }
 
-    private PreKeyStore getPreKeyStore() {
-        return getOrCreate(() -> preKeyStore, () -> preKeyStore = new PreKeyStore(getPreKeysPath(dataPath, account)));
+    public void addKyberPreKeys(ServiceIdType serviceIdType, List<KyberPreKeyRecord> records) {
+        final var accountData = getAccountData(serviceIdType);
+        final var preKeyMetadata = accountData.getPreKeyMetadata();
+        logger.debug("Adding {} {} kyber pre keys with offset {}",
+                records.size(),
+                serviceIdType,
+                preKeyMetadata.nextKyberPreKeyId);
+        accountData.getSignalServiceAccountDataStore()
+                .markAllOneTimeKyberPreKeysStaleIfNecessary(System.currentTimeMillis());
+        for (var record : records) {
+            if (preKeyMetadata.nextKyberPreKeyId != record.getId()) {
+                logger.error("Invalid kyber pre key id {}, expected {}",
+                        record.getId(),
+                        preKeyMetadata.nextKyberPreKeyId);
+                throw new AssertionError("Invalid kyber pre key id");
+            }
+            accountData.getKyberPreKeyStore().storeKyberPreKey(record.getId(), record);
+            preKeyMetadata.nextKyberPreKeyId = (preKeyMetadata.nextKyberPreKeyId + 1) % PREKEY_MAXIMUM_ID;
+        }
+        save();
     }
 
-    private SignedPreKeyStore getSignedPreKeyStore() {
-        return getOrCreate(() -> signedPreKeyStore,
-                () -> signedPreKeyStore = new SignedPreKeyStore(getSignedPreKeysPath(dataPath, account)));
+    public void addLastResortKyberPreKey(ServiceIdType serviceIdType, KyberPreKeyRecord record) {
+        final var accountData = getAccountData(serviceIdType);
+        final var preKeyMetadata = accountData.getPreKeyMetadata();
+        logger.debug("Adding {} last resort kyber pre key with offset {}",
+                serviceIdType,
+                preKeyMetadata.nextKyberPreKeyId);
+        if (preKeyMetadata.nextKyberPreKeyId != record.getId()) {
+            logger.error("Invalid last resort kyber pre key id {}, expected {}",
+                    record.getId(),
+                    preKeyMetadata.nextKyberPreKeyId);
+            throw new AssertionError("Invalid last resort kyber pre key id");
+        }
+        accountData.getKyberPreKeyStore().storeLastResortKyberPreKey(record.getId(), record);
+        preKeyMetadata.activeLastResortKyberPreKeyId = record.getId();
+        preKeyMetadata.nextKyberPreKeyId = (preKeyMetadata.nextKyberPreKeyId + 1) % PREKEY_MAXIMUM_ID;
+        save();
     }
 
-    public SessionStore getSessionStore() {
-        return getOrCreate(() -> sessionStore,
-                () -> sessionStore = new SessionStore(getSessionsPath(dataPath, account), getRecipientStore()));
+    public int getPreviousStorageVersion() {
+        return previousStorageVersion;
+    }
+
+    public AccountData<? extends ServiceId> getAccountData(ServiceIdType serviceIdType) {
+        return switch (serviceIdType) {
+            case ACI -> aciAccountData;
+            case PNI -> pniAccountData;
+        };
+    }
+
+    public AccountData<? extends ServiceId> getAccountData(ServiceId accountIdentifier) {
+        if (accountIdentifier.equals(aciAccountData.getServiceId())) {
+            return aciAccountData;
+        } else if (accountIdentifier.equals(pniAccountData.getServiceId())) {
+            return pniAccountData;
+        } else {
+            throw new IllegalArgumentException("No matching account data found for " + accountIdentifier);
+        }
+    }
+
+    public SignalServiceDataStore getSignalServiceDataStore() {
+        return new SignalServiceDataStore() {
+            @Override
+            public SignalServiceAccountDataStore get(final ServiceId accountIdentifier) {
+                return getAccountData(accountIdentifier).getSignalServiceAccountDataStore();
+            }
+
+            @Override
+            public SignalServiceAccountDataStore aci() {
+                return aciAccountData.getSignalServiceAccountDataStore();
+            }
+
+            @Override
+            public SignalServiceAccountDataStore pni() {
+                return pniAccountData.getSignalServiceAccountDataStore();
+            }
+
+            @Override
+            public SignalServiceAccountDataStore pniOrNull() {
+                return getPni() != null ? pniAccountData.getSignalServiceAccountDataStore() : null;
+            }
+
+            @Override
+            public boolean isMultiDevice() {
+                return SignalAccount.this.isMultiDevice();
+            }
+        };
     }
 
     public IdentityKeyStore getIdentityKeyStore() {
         return getOrCreate(() -> identityKeyStore,
-                () -> identityKeyStore = new IdentityKeyStore(getIdentitiesPath(dataPath, account),
-                        getRecipientStore(),
-                        identityKeyPair,
-                        localRegistrationId,
-                        trustNewIdentity));
+                () -> identityKeyStore = new IdentityKeyStore(getAccountDatabase(),
+                        settings.trustNewIdentity(),
+                        getRecipientStore()));
     }
 
     public GroupStore getGroupStore() {
-        return groupStore;
+        return getOrCreate(() -> groupStore,
+                () -> groupStore = new GroupStore(getAccountDatabase(),
+                        getRecipientResolver(),
+                        getRecipientIdCreator(),
+                        this::rotateOurSenderKey));
     }
 
     public ContactsStore getContactStore() {
         return getRecipientStore();
     }
 
+    public CdsiStore getCdsiStore() {
+        return getOrCreate(() -> cdsiStore, () -> cdsiStore = new CdsiStore(getAccountDatabase()));
+    }
+
+    private RecipientIdCreator getRecipientIdCreator() {
+        return recipientId -> getRecipientStore().create(recipientId);
+    }
+
+    public RecipientResolver getRecipientResolver() {
+        return new RecipientResolver.RecipientResolverWrapper(this::getRecipientStore);
+    }
+
+    public RecipientTrustedResolver getRecipientTrustedResolver() {
+        return new RecipientTrustedResolver.RecipientTrustedResolverWrapper(this::getRecipientStore);
+    }
+
+    public RecipientAddressResolver getRecipientAddressResolver() {
+        return recipientId -> getRecipientStore().resolveRecipientAddress(recipientId);
+    }
+
     public RecipientStore getRecipientStore() {
         return getOrCreate(() -> recipientStore,
-                () -> recipientStore = RecipientStore.load(getRecipientsStoreFile(dataPath, account),
-                        this::mergeRecipients));
+                () -> recipientStore = new RecipientStore(this::mergeRecipients,
+                        this::getSelfRecipientAddress,
+                        this::getProfileKey,
+                        getAccountDatabase()));
     }
 
     public ProfileStore getProfileStore() {
@@ -862,30 +1383,35 @@ public class SignalAccount implements Closeable {
     }
 
     public StickerStore getStickerStore() {
-        return stickerStore;
+        return getOrCreate(() -> stickerStore, () -> stickerStore = new StickerStore(getAccountDatabase()));
     }
 
     public SenderKeyStore getSenderKeyStore() {
-        return getOrCreate(() -> senderKeyStore,
-                () -> senderKeyStore = new SenderKeyStore(getSharedSenderKeysFile(dataPath, account),
-                        getSenderKeysPath(dataPath, account),
-                        getRecipientStore()::resolveRecipientAddress,
-                        getRecipientStore()));
+        return getOrCreate(() -> senderKeyStore, () -> senderKeyStore = new SenderKeyStore(getAccountDatabase()));
+    }
+
+    private KeyValueStore getKeyValueStore() {
+        return getOrCreate(() -> keyValueStore, () -> keyValueStore = new KeyValueStore(getAccountDatabase()));
+    }
+
+    public UnknownStorageIdStore getUnknownStorageIdStore() {
+        return getOrCreate(() -> unknownStorageIdStore, () -> unknownStorageIdStore = new UnknownStorageIdStore());
     }
 
     public ConfigurationStore getConfigurationStore() {
-        return configurationStore;
+        return getOrCreate(() -> configurationStore,
+                () -> configurationStore = new ConfigurationStore(getKeyValueStore(), getRecipientStore()));
     }
 
     public MessageCache getMessageCache() {
         return getOrCreate(() -> messageCache,
-                () -> messageCache = new MessageCache(getMessageCachePath(dataPath, account)));
+                () -> messageCache = new MessageCache(getMessageCachePath(dataPath, accountPath)));
     }
 
-    public Database getDatabase() {
-        return getOrCreate(() -> database, () -> {
+    public AccountDatabase getAccountDatabase() {
+        return getOrCreate(() -> accountDatabase, () -> {
             try {
-                database = Database.init(getDatabaseFile(dataPath, account));
+                accountDatabase = AccountDatabase.init(getDatabaseFile(dataPath, accountPath));
             } catch (SQLException e) {
                 throw new RuntimeException(e);
             }
@@ -894,33 +1420,231 @@ public class SignalAccount implements Closeable {
 
     public MessageSendLogStore getMessageSendLogStore() {
         return getOrCreate(() -> messageSendLogStore,
-                () -> messageSendLogStore = new MessageSendLogStore(getRecipientStore(), getDatabase()));
+                () -> messageSendLogStore = new MessageSendLogStore(getAccountDatabase(),
+                        settings.disableMessageSendLog()));
     }
 
-    public String getAccount() {
-        return account;
+    public CredentialsProvider getCredentialsProvider() {
+        return new CredentialsProvider() {
+            @Override
+            public ACI getAci() {
+                return aciAccountData.getServiceId();
+            }
+
+            @Override
+            public PNI getPni() {
+                return pniAccountData.getServiceId();
+            }
+
+            @Override
+            public String getE164() {
+                return number;
+            }
+
+            @Override
+            public String getPassword() {
+                return password;
+            }
+
+            @Override
+            public int getDeviceId() {
+                return deviceId;
+            }
+        };
+    }
+
+    public String getNumber() {
+        return number;
+    }
+
+    public void setNumber(final String number) {
+        this.number = number;
+        save();
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public void setUsername(final String username) {
+        this.username = username;
+        save();
+    }
+
+    public UsernameLinkComponents getUsernameLink() {
+        return usernameLink;
+    }
+
+    public void setUsernameLink(final UsernameLinkComponents usernameLink) {
+        this.usernameLink = usernameLink;
+        save();
+    }
+
+    public ServiceEnvironment getServiceEnvironment() {
+        return serviceEnvironment;
+    }
+
+    public void setServiceEnvironment(final ServiceEnvironment serviceEnvironment) {
+        this.serviceEnvironment = serviceEnvironment;
+        save();
+    }
+
+    public AccountAttributes getAccountAttributes(String registrationLock) {
+        return new AccountAttributes(null,
+                aciAccountData.getLocalRegistrationId(),
+                false,
+                false,
+                true,
+                registrationLock != null ? registrationLock : getRegistrationLock(),
+                getSelfUnidentifiedAccessKey(),
+                isUnrestrictedUnidentifiedAccess(),
+                isDiscoverableByPhoneNumber(),
+                getAccountCapabilities(),
+                encryptedDeviceName,
+                pniAccountData.getLocalRegistrationId(),
+                getRecoveryPassword());
+    }
+
+    public AccountAttributes.Capabilities getAccountCapabilities() {
+        return getCapabilities(isPrimaryDevice(), number != null);
+    }
+
+    public RegistrationApiV2.AccountAttributes getAccountAttributesV2() {
+        return getAccountAttributesV2(false, getRegistrationLock());
+    }
+
+    public RegistrationApiV2.AccountAttributes getAccountAttributesV2(
+            final boolean includePniRegistrationId,
+            final String registrationLock
+    ) {
+        return getAccountAttributesV2(includePniRegistrationId,
+                registrationLock,
+                getRecoveryPassword(),
+                number == null ? null : isDiscoverableByPhoneNumber());
+    }
+
+    public RegistrationApiV2.AccountAttributes getAccountAttributesV2ForRecovery(
+            final String registrationLock,
+            final String recoveryPassword
+    ) {
+        return getAccountAttributesV2(true, registrationLock, recoveryPassword, null);
+    }
+
+    private RegistrationApiV2.AccountAttributes getAccountAttributesV2(
+            final boolean includePniRegistrationId,
+            final String registrationLock,
+            final String recoveryPassword,
+            final Boolean discoverableByPhoneNumber
+    ) {
+        final var attributes = getAccountAttributes(null);
+        final var capabilities = attributes.getCapabilities();
+        return new RegistrationApiV2.AccountAttributes(attributes.getSignalingKey(),
+                attributes.getRegistrationId(),
+                attributes.getVoice(),
+                attributes.getVideo(),
+                attributes.getFetchesMessages(),
+                registrationLock,
+                attributes.getUnidentifiedAccessKey(),
+                attributes.getUnrestrictedUnidentifiedAccess(),
+                discoverableByPhoneNumber,
+                new RegistrationApiV2.AccountAttributes.Capabilities(capabilities.getStorage(),
+                        capabilities.getVersionedExpirationTimer(),
+                        capabilities.getAttachmentBackfill(),
+                        capabilities.getSpqr(),
+                        capabilities.getUsernameChangeSyncMessage(),
+                        capabilities.getOptionalPhoneNumber()),
+                attributes.getName(),
+                includePniRegistrationId || getPni() != null ? attributes.getPniRegistrationId() : null,
+                recoveryPassword);
+    }
+
+    public ServiceId getAccountId(ServiceIdType serviceIdType) {
+        return getAccountData(serviceIdType).getServiceId();
     }
 
     public ACI getAci() {
-        return aci;
+        return aciAccountData.getServiceId();
     }
 
     public void setAci(final ACI aci) {
-        this.aci = aci;
+        this.aciAccountData.setServiceId(aci);
+        save();
+    }
+
+    public PNI getPni() {
+        return pniAccountData.getServiceId();
+    }
+
+    public void setPni(final PNI updatedPni) {
+        final var oldPni = pniAccountData.getServiceId();
+        if (oldPni != null && !oldPni.equals(updatedPni)) {
+            // Clear data for old PNI
+            identityKeyStore.deleteIdentity(oldPni);
+        }
+
+        this.pniAccountData.setServiceId(updatedPni);
+        getRecipientTrustedResolver().resolveSelfRecipientTrusted(getSelfRecipientAddress());
+        trustSelfIdentity(ServiceIdType.PNI);
+        save();
+    }
+
+    public void setNewPniIdentity(
+            final IdentityKeyPair pniIdentityKeyPair,
+            final SignedPreKeyRecord pniSignedPreKey,
+            final KyberPreKeyRecord lastResortKyberPreKey,
+            final int localPniRegistrationId
+    ) {
+        setPniIdentityKeyPair(pniIdentityKeyPair);
+        pniAccountData.setLocalRegistrationId(localPniRegistrationId);
+
+        final AccountData<? extends ServiceId> accountData = getAccountData(ServiceIdType.PNI);
+        final var preKeyMetadata = accountData.getPreKeyMetadata();
+        preKeyMetadata.nextSignedPreKeyId = pniSignedPreKey.getId();
+        accountData.getSignedPreKeyStore().removeSignedPreKey(pniSignedPreKey.getId());
+        addSignedPreKey(ServiceIdType.PNI, pniSignedPreKey);
+        if (lastResortKyberPreKey != null) {
+            preKeyMetadata.nextKyberPreKeyId = lastResortKyberPreKey.getId();
+            accountData.getKyberPreKeyStore().removeKyberPreKey(lastResortKyberPreKey.getId());
+            addLastResortKyberPreKey(ServiceIdType.PNI, lastResortKyberPreKey);
+        }
         save();
     }
 
     public SignalServiceAddress getSelfAddress() {
-        return new SignalServiceAddress(aci, account);
+        return new SignalServiceAddress(getAci(), number);
+    }
+
+    public RecipientAddress getSelfRecipientAddress() {
+        return new RecipientAddress(getAci(), getPni(), number, username);
     }
 
     public RecipientId getSelfRecipientId() {
-        return getRecipientStore().resolveRecipientTrusted(new RecipientAddress(aci == null ? null : aci.uuid(),
-                account));
+        return selfRecipientId;
     }
 
-    public String getEncryptedDeviceName() {
-        return encryptedDeviceName;
+    public Profile getSelfRecipientProfile() {
+        return recipientStore.getProfile(selfRecipientId);
+    }
+
+    public String getSessionId(final String forNumber) {
+        final var keyValueStore = getKeyValueStore();
+        final var sessionNumber = keyValueStore.getEntry(verificationSessionNumber);
+        if (!forNumber.equals(sessionNumber)) {
+            return null;
+        }
+        return keyValueStore.getEntry(verificationSessionId);
+    }
+
+    public void setSessionId(final String sessionNumber, final String sessionId) {
+        final var keyValueStore = getKeyValueStore();
+        keyValueStore.storeEntry(verificationSessionNumber, sessionNumber);
+        keyValueStore.storeEntry(verificationSessionId, sessionId);
+    }
+
+    public void clearSessionId() {
+        final var keyValueStore = getKeyValueStore();
+        keyValueStore.storeEntry(verificationSessionNumber, null);
+        keyValueStore.storeEntry(verificationSessionId, null);
     }
 
     public void setEncryptedDeviceName(final String encryptedDeviceName) {
@@ -932,62 +1656,216 @@ public class SignalAccount implements Closeable {
         return deviceId;
     }
 
-    public boolean isMasterDevice() {
+    public boolean isPrimaryDevice() {
         return deviceId == SignalServiceAddress.DEFAULT_DEVICE_ID;
     }
 
-    public IdentityKeyPair getIdentityKeyPair() {
-        return identityKeyPair;
+    public IdentityKeyPair getIdentityKeyPair(ServiceIdType serviceIdType) {
+        return getAccountData(serviceIdType).getIdentityKeyPair();
     }
 
-    public int getLocalRegistrationId() {
-        return localRegistrationId;
+    public IdentityKeyPair getAciIdentityKeyPair() {
+        return aciAccountData.getIdentityKeyPair();
+    }
+
+    public IdentityKeyPair getPniIdentityKeyPair() {
+        return pniAccountData.getIdentityKeyPair();
+    }
+
+    public void setPniIdentityKeyPair(final IdentityKeyPair identityKeyPair) {
+        pniAccountData.setIdentityKeyPair(identityKeyPair);
+        trustSelfIdentity(ServiceIdType.PNI);
+        save();
     }
 
     public String getPassword() {
         return password;
     }
 
-    private void setPassword(final String password) {
-        this.password = password;
-        save();
-    }
-
-    public void setRegistrationLockPin(final String registrationLockPin, final MasterKey pinMasterKey) {
+    public void setRegistrationLockPin(final String registrationLockPin) {
         this.registrationLockPin = registrationLockPin;
-        this.pinMasterKey = pinMasterKey;
         save();
     }
 
-    public MasterKey getPinMasterKey() {
-        return pinMasterKey;
+    public String getRegistrationLockPin() {
+        return registrationLockPin;
     }
 
-    public StorageKey getStorageKey() {
-        if (pinMasterKey != null) {
-            return pinMasterKey.deriveStorageServiceKey();
+    public String getRegistrationLock() {
+        final var masterKey = getPinBackedMasterKey();
+        if (masterKey == null) {
+            return null;
         }
-        return storageKey;
+        return masterKey.deriveRegistrationLock();
+    }
+
+    public MasterKey getPinBackedMasterKey() {
+        if (registrationLockPin == null) {
+            return null;
+        } else if (!isPrimaryDevice()) {
+            return getMasterKey();
+        }
+        return getOrCreatePinMasterKey();
+    }
+
+    public MasterKey getOrCreatePinMasterKey() {
+        final var key = getMasterKey();
+        if (key != null) {
+            return key;
+        }
+
+        return getOrCreateAccountEntropyPool().deriveMasterKey();
+    }
+
+    private MasterKey getMasterKey() {
+        if (pinMasterKey != null) {
+            return pinMasterKey;
+        } else if (accountEntropyPool != null) {
+            return accountEntropyPool.deriveMasterKey();
+        }
+        return null;
+    }
+
+    public void setMasterKey(MasterKey masterKey) {
+        if (isPrimaryDevice()) {
+            return;
+        }
+        this.pinMasterKey = masterKey;
+        if (masterKey != null) {
+            this.storageKey = null;
+        }
+        save();
+    }
+
+    public StorageKey getOrCreateStorageKey() {
+        if (storageKey != null) {
+            return storageKey;
+        } else if (pinMasterKey != null) {
+            return pinMasterKey.deriveStorageServiceKey();
+        } else if (accountEntropyPool != null) {
+            return accountEntropyPool.deriveMasterKey().deriveStorageServiceKey();
+        } else if (!isPrimaryDevice() || !isMultiDevice()) {
+            // Only upload storage, if a pin master key already exists or linked devices exist
+            return null;
+        }
+
+        return getOrCreatePinMasterKey().deriveStorageServiceKey();
     }
 
     public void setStorageKey(final StorageKey storageKey) {
-        if (storageKey.equals(this.storageKey)) {
+        if (isPrimaryDevice() || storageKey.equals(this.storageKey)) {
             return;
         }
         this.storageKey = storageKey;
         save();
     }
 
-    public long getStorageManifestVersion() {
-        return this.storageManifestVersion;
+    public AccountEntropyPool getOrCreateAccountEntropyPool() {
+        if (accountEntropyPool == null) {
+            accountEntropyPool = AccountEntropyPool.Companion.generate();
+            save();
+        }
+        return accountEntropyPool;
     }
 
-    public void setStorageManifestVersion(final long storageManifestVersion) {
-        if (storageManifestVersion == this.storageManifestVersion) {
+    public AccountEntropyPool getAccountEntropyPool() {
+        return accountEntropyPool;
+    }
+
+    public void setAccountEntropyPool(final AccountEntropyPool accountEntropyPool) {
+        this.accountEntropyPool = accountEntropyPool;
+        if (accountEntropyPool != null) {
+            this.storageKey = null;
+            this.pinMasterKey = null;
+        }
+        save();
+    }
+
+    public boolean needsStorageKeyMigration() {
+        return isPrimaryDevice() && (storageKey != null || pinMasterKey != null);
+    }
+
+    public MediaRootBackupKey getOrCreateMediaRootBackupKey() {
+        if (mediaRootBackupKey == null) {
+            mediaRootBackupKey = KeyUtils.createMediaRootBackupKey();
+            save();
+        }
+        return mediaRootBackupKey;
+    }
+
+    public void setMediaRootBackupKey(final MediaRootBackupKey mediaRootBackupKey) {
+        this.mediaRootBackupKey = mediaRootBackupKey;
+        save();
+    }
+
+    public byte[] getAuthCredentialSalt() {
+        return authCredentialSalt;
+    }
+
+    public String getRecoveryPassword() {
+        final var masterKey = getPinBackedMasterKey();
+        if (masterKey == null) {
+            return null;
+        }
+        return masterKey.deriveRegistrationRecoveryPassword();
+    }
+
+    public long getStorageManifestVersion() {
+        return getKeyValueStore().getEntry(storageManifestVersion);
+    }
+
+    public void setStorageManifestVersion(final long value) {
+        getKeyValueStore().storeEntry(storageManifestVersion, value);
+    }
+
+    public Optional<SignalStorageManifest> getStorageManifest() {
+        final var storageManifestFile = getStorageManifestFile(dataPath, accountPath);
+        if (!storageManifestFile.exists()) {
+            return Optional.empty();
+        }
+        try (var inputStream = new FileInputStream(storageManifestFile)) {
+            return Optional.of(SignalStorageManifest.Companion.deserialize(inputStream.readAllBytes()));
+        } catch (IOException e) {
+            logger.warn("Failed to read local storage manifest.", e);
+            return Optional.empty();
+        }
+    }
+
+    public void setStorageManifest(SignalStorageManifest manifest) {
+        final var storageManifestFile = getStorageManifestFile(dataPath, accountPath);
+        if (manifest == null) {
+            if (storageManifestFile.exists()) {
+                try {
+                    Files.delete(storageManifestFile.toPath());
+                } catch (IOException e) {
+                    logger.error("Failed to delete local storage manifest.", e);
+                }
+            }
             return;
         }
-        this.storageManifestVersion = storageManifestVersion;
-        save();
+
+        final var manifestBytes = manifest.serialize();
+        try (var outputStream = new FileOutputStream(storageManifestFile)) {
+            outputStream.write(manifestBytes);
+        } catch (IOException e) {
+            logger.error("Failed to store local storage manifest.", e);
+        }
+    }
+
+    public byte[] getCdsiToken() {
+        return getKeyValueStore().getEntry(cdsiToken);
+    }
+
+    public void setCdsiToken(final byte[] value) {
+        getKeyValueStore().storeEntry(cdsiToken, value);
+    }
+
+    public Long getLastRecipientsRefresh() {
+        return getKeyValueStore().getEntry(lastRecipientsRefresh);
+    }
+
+    public void setLastRecipientsRefresh(final Long value) {
+        getKeyValueStore().storeEntry(lastRecipientsRefresh, value);
     }
 
     public ProfileKey getProfileKey() {
@@ -1006,16 +1884,8 @@ public class SignalAccount implements Closeable {
         return UnidentifiedAccess.deriveAccessKeyFrom(getProfileKey());
     }
 
-    public int getPreKeyIdOffset() {
-        return preKeyIdOffset;
-    }
-
-    public int getNextSignedPreKeyId() {
-        return nextSignedPreKeyId;
-    }
-
     public boolean isRegistered() {
-        return registered;
+        return registered && deviceId > 0;
     }
 
     public void setRegistered(final boolean registered) {
@@ -1036,54 +1906,70 @@ public class SignalAccount implements Closeable {
     }
 
     public long getLastReceiveTimestamp() {
-        return lastReceiveTimestamp;
+        return getKeyValueStore().getEntry(lastReceiveTimestamp);
     }
 
-    public void setLastReceiveTimestamp(final long lastReceiveTimestamp) {
-        this.lastReceiveTimestamp = lastReceiveTimestamp;
-        save();
+    public void setLastReceiveTimestamp(final long value) {
+        getKeyValueStore().storeEntry(lastReceiveTimestamp, value);
+    }
+
+    public long getLastAppliedPniChangeServerTimestamp() {
+        return getKeyValueStore().getEntry(lastAppliedPniChangeServerTimestamp);
+    }
+
+    public void setLastAppliedPniChangeServerTimestamp(final long value) {
+        getKeyValueStore().storeEntry(lastAppliedPniChangeServerTimestamp, value);
+    }
+
+    public void setNeedsToRetryFailedMessages(final boolean value) {
+        getKeyValueStore().storeEntry(needsToRetryFailedMessages, value);
+    }
+
+    public boolean getNeedsToRetryFailedMessages() {
+        return getKeyValueStore().getEntry(needsToRetryFailedMessages);
     }
 
     public boolean isUnrestrictedUnidentifiedAccess() {
-        // TODO make configurable
-        return false;
+        return Boolean.TRUE.equals(getKeyValueStore().getEntry(unrestrictedUnidentifiedAccess));
+    }
+
+    public void setUnrestrictedUnidentifiedAccess(boolean value) {
+        getKeyValueStore().storeEntry(unrestrictedUnidentifiedAccess, value);
     }
 
     public boolean isDiscoverableByPhoneNumber() {
-        return configurationStore.getPhoneNumberUnlisted() == null || !configurationStore.getPhoneNumberUnlisted();
+        final var phoneNumberUnlisted = getConfigurationStore().getPhoneNumberUnlisted();
+        return phoneNumberUnlisted == null || !phoneNumberUnlisted;
     }
 
-    public void finishRegistration(final ACI aci, final MasterKey masterKey, final String pin) {
-        this.pinMasterKey = masterKey;
-        this.storageManifestVersion = -1;
-        this.storageKey = null;
-        this.encryptedDeviceName = null;
-        this.deviceId = SignalServiceAddress.DEFAULT_DEVICE_ID;
-        this.isMultiDevice = false;
-        this.registered = true;
-        this.aci = aci;
-        this.registrationLockPin = pin;
-        this.lastReceiveTimestamp = 0;
-        save();
+    private void trustSelfIdentity(ServiceIdType serviceIdType) {
+        final var accountData = getAccountData(serviceIdType);
+        final var serviceId = accountData.getServiceId();
+        final var identityKeyPair = accountData.getIdentityKeyPair();
+        if (serviceId == null || identityKeyPair == null) {
+            return;
+        }
+        final var publicKey = identityKeyPair.getPublicKey();
+        getIdentityKeyStore().saveIdentity(serviceId, publicKey);
+        getIdentityKeyStore().setIdentityTrustLevel(serviceId, publicKey, TrustLevel.TRUSTED_VERIFIED);
+    }
 
-        clearAllPreKeys();
-        getSessionStore().archiveAllSessions();
-        getSenderKeyStore().deleteAll();
-        final var recipientId = getRecipientStore().resolveRecipientTrusted(getSelfAddress());
-        final var publicKey = getIdentityKeyPair().getPublicKey();
-        getIdentityKeyStore().saveIdentity(recipientId, publicKey, new Date());
-        getIdentityKeyStore().setIdentityTrustLevel(recipientId, publicKey, TrustLevel.TRUSTED_VERIFIED);
+    public void deleteAccountData() throws IOException {
+        close();
+        try (final var files = Files.walk(getUserPath(dataPath, accountPath).toPath())
+                .sorted(Comparator.reverseOrder())) {
+            for (final var file = files.iterator(); file.hasNext(); ) {
+                Files.delete(file.next());
+            }
+        }
+        Files.delete(getFileName(dataPath, accountPath).toPath());
     }
 
     @Override
     public void close() {
         synchronized (fileChannel) {
-            if (database != null) {
-                try {
-                    database.close();
-                } catch (SQLException e) {
-                    logger.warn("Failed to close account database: {}", e.getMessage(), e);
-                }
+            if (accountDatabase != null) {
+                accountDatabase.close();
             }
             if (messageSendLogStore != null) {
                 messageSendLogStore.close();
@@ -1119,5 +2005,181 @@ public class SignalAccount implements Closeable {
     private interface Callable {
 
         void call();
+    }
+
+    public static class PreKeyMetadata {
+
+        private int nextPreKeyId = 1;
+        private int nextSignedPreKeyId = 1;
+        private int activeSignedPreKeyId = -1;
+        private int nextKyberPreKeyId = 1;
+        private int activeLastResortKyberPreKeyId = -1;
+
+        public int getNextPreKeyId() {
+            return nextPreKeyId;
+        }
+
+        public int getNextSignedPreKeyId() {
+            return nextSignedPreKeyId;
+        }
+
+        public int getActiveSignedPreKeyId() {
+            return activeSignedPreKeyId;
+        }
+
+        public int getNextKyberPreKeyId() {
+            return nextKyberPreKeyId;
+        }
+
+        public int getActiveLastResortKyberPreKeyId() {
+            return activeLastResortKyberPreKeyId;
+        }
+    }
+
+    public class AccountData<SERVICE_ID extends ServiceId> {
+
+        private final ServiceIdType serviceIdType;
+        private SERVICE_ID serviceId;
+        private IdentityKeyPair identityKeyPair;
+        private int localRegistrationId;
+        private final PreKeyMetadata preKeyMetadata = new PreKeyMetadata();
+
+        private SignalProtocolStore signalProtocolStore;
+        private PreKeyStore preKeyStore;
+        private SignedPreKeyStore signedPreKeyStore;
+        private KyberPreKeyStore kyberPreKeyStore;
+        private SessionStore sessionStore;
+        private SignalIdentityKeyStore identityKeyStore;
+
+        private AccountData(final ServiceIdType serviceIdType) {
+            this.serviceIdType = serviceIdType;
+        }
+
+        public SERVICE_ID getServiceId() {
+            return serviceId;
+        }
+
+        private void setServiceId(final SERVICE_ID serviceId) {
+            this.serviceId = serviceId;
+        }
+
+        public IdentityKeyPair getIdentityKeyPair() {
+            return identityKeyPair;
+        }
+
+        private void setIdentityKeyPair(final IdentityKeyPair identityKeyPair) {
+            this.identityKeyPair = identityKeyPair;
+        }
+
+        public int getLocalRegistrationId() {
+            return localRegistrationId;
+        }
+
+        private void setLocalRegistrationId(final int localRegistrationId) {
+            this.localRegistrationId = localRegistrationId;
+            this.identityKeyStore = null;
+        }
+
+        public PreKeyMetadata getPreKeyMetadata() {
+            return preKeyMetadata;
+        }
+
+        private SignalServiceAccountDataStore getSignalServiceAccountDataStore() {
+            return getOrCreate(() -> signalProtocolStore,
+                    () -> signalProtocolStore = new SignalProtocolStore(getPreKeyStore(),
+                            getSignedPreKeyStore(),
+                            getKyberPreKeyStore(),
+                            getSessionStore(),
+                            getIdentityKeyStore(),
+                            getSenderKeyStore(),
+                            SignalAccount.this::isMultiDevice,
+                            SignalAccount.this::setMultiDevice));
+        }
+
+        public PreKeyStore getPreKeyStore() {
+            return getOrCreate(() -> preKeyStore,
+                    () -> preKeyStore = new PreKeyStore(getAccountDatabase(), serviceIdType));
+        }
+
+        public SignedPreKeyStore getSignedPreKeyStore() {
+            return getOrCreate(() -> signedPreKeyStore,
+                    () -> signedPreKeyStore = new SignedPreKeyStore(getAccountDatabase(), serviceIdType));
+        }
+
+        public KyberPreKeyStore getKyberPreKeyStore() {
+            return getOrCreate(() -> kyberPreKeyStore,
+                    () -> kyberPreKeyStore = new KyberPreKeyStore(getAccountDatabase(), serviceIdType));
+        }
+
+        public SessionStore getSessionStore() {
+            return getOrCreate(() -> sessionStore,
+                    () -> sessionStore = new SessionStore(getAccountDatabase(), serviceIdType));
+        }
+
+        public SignalIdentityKeyStore getIdentityKeyStore() {
+            return getOrCreate(() -> identityKeyStore,
+                    () -> identityKeyStore = new SignalIdentityKeyStore(() -> identityKeyPair,
+                            localRegistrationId,
+                            SignalAccount.this.getIdentityKeyStore()));
+        }
+    }
+
+    public record Storage(
+            int version,
+            long timestamp,
+            String serviceEnvironment,
+            boolean registered,
+            String number,
+            String username,
+            String encryptedDeviceName,
+            int deviceId,
+            boolean isMultiDevice,
+            String password,
+            AccountData aciAccountData,
+            AccountData pniAccountData,
+            String registrationLockPin,
+            String pinMasterKey,
+            String storageKey,
+            String accountEntropyPool,
+            String authCredentialSalt,
+            String mediaRootBackupKey,
+            String profileKey,
+            String usernameLinkEntropy,
+            String usernameLinkServerId
+    ) {
+
+        public record AccountData(
+                String serviceId,
+                int registrationId,
+                String identityPrivateKey,
+                String identityPublicKey,
+
+                int nextPreKeyId,
+                int nextSignedPreKeyId,
+                int activeSignedPreKeyId,
+                int nextKyberPreKeyId,
+                int activeLastResortKyberPreKeyId
+        ) {
+
+            private static AccountData from(final SignalAccount.AccountData<?> accountData) {
+                final var base64 = Base64.getEncoder();
+                final var preKeyMetadata = accountData.getPreKeyMetadata();
+                return new AccountData(accountData.getServiceId() == null
+                        ? null
+                        : accountData.getServiceId().toString(),
+                        accountData.getLocalRegistrationId(),
+                        accountData.getIdentityKeyPair() == null
+                                ? null
+                                : base64.encodeToString(accountData.getIdentityKeyPair().getPrivateKey().serialize()),
+                        accountData.getIdentityKeyPair() == null
+                                ? null
+                                : base64.encodeToString(accountData.getIdentityKeyPair().getPublicKey().serialize()),
+                        preKeyMetadata.getNextPreKeyId(),
+                        preKeyMetadata.getNextSignedPreKeyId(),
+                        preKeyMetadata.getActiveSignedPreKeyId(),
+                        preKeyMetadata.getNextKyberPreKeyId(),
+                        preKeyMetadata.getActiveLastResortKyberPreKeyId());
+            }
+        }
     }
 }

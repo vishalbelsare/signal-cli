@@ -8,10 +8,10 @@ import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.commands.exceptions.IOErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.GroupNotFoundException;
+import org.asamk.signal.manager.api.LastGroupAdminException;
+import org.asamk.signal.manager.api.NotAGroupMemberException;
 import org.asamk.signal.manager.api.UnregisteredRecipientException;
-import org.asamk.signal.manager.groups.GroupNotFoundException;
-import org.asamk.signal.manager.groups.LastGroupAdminException;
-import org.asamk.signal.manager.groups.NotAGroupMemberException;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.util.CommandUtil;
 import org.slf4j.Logger;
@@ -23,7 +23,7 @@ import static org.asamk.signal.util.SendMessageResultUtils.outputResult;
 
 public class QuitGroupCommand implements JsonRpcLocalCommand {
 
-    private final static Logger logger = LoggerFactory.getLogger(QuitGroupCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(QuitGroupCommand.class);
 
     @Override
     public String getName() {
@@ -44,7 +44,9 @@ public class QuitGroupCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         final var groupId = CommandUtil.getGroupId(ns.getString("group-id"));
 

@@ -21,9 +21,19 @@ import static java.nio.file.attribute.PosixFilePermission.OWNER_WRITE;
 public class IOUtils {
 
     public static File createTempFile() throws IOException {
-        final var tempFile = File.createTempFile("signal-cli_tmp_", ".tmp");
-        tempFile.deleteOnExit();
-        return tempFile;
+        final var prefix = "signal-cli_tmp_";
+        final var suffix = ".tmp";
+        try {
+            Set<PosixFilePermission> perms = EnumSet.of(OWNER_READ, OWNER_WRITE);
+            var path = Files.createTempFile(prefix, suffix, PosixFilePermissions.asFileAttribute(perms));
+            var tempFile = path.toFile();
+            tempFile.deleteOnExit();
+            return tempFile;
+        } catch (UnsupportedOperationException e) {
+            final var tempFile = File.createTempFile(prefix, suffix);
+            tempFile.deleteOnExit();
+            return tempFile;
+        }
     }
 
     public static byte[] readFully(InputStream in) throws IOException {
@@ -60,6 +70,14 @@ public class IOUtils {
         try (InputStream inputStream = new FileInputStream(inputFile)) {
             copyStream(inputStream, output);
         }
+    }
+
+    /**
+     * Read and discard all data from the input stream.
+     * This is useful to ensure that all data is read and any resources are released, without needing to store the data in memory.
+     */
+    public static void discardStream(InputStream input) throws IOException {
+        copyStream(input, OutputStream.nullOutputStream());
     }
 
     public static void copyStream(InputStream input, OutputStream output) throws IOException {

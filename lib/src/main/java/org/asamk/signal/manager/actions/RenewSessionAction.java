@@ -2,21 +2,24 @@ package org.asamk.signal.manager.actions;
 
 import org.asamk.signal.manager.helper.Context;
 import org.asamk.signal.manager.storage.recipients.RecipientId;
+import org.signal.core.models.ServiceId;
 
 public class RenewSessionAction implements HandleAction {
 
     private final RecipientId recipientId;
+    private final ServiceId serviceId;
+    private final ServiceId accountId;
 
-    public RenewSessionAction(final RecipientId recipientId) {
+    public RenewSessionAction(final RecipientId recipientId, final ServiceId serviceId, final ServiceId accountId) {
         this.recipientId = recipientId;
+        this.serviceId = serviceId;
+        this.accountId = accountId;
     }
 
     @Override
     public void execute(Context context) throws Throwable {
-        context.getAccount().getSessionStore().archiveSessions(recipientId);
-        if (!recipientId.equals(context.getAccount().getSelfRecipientId())) {
-            context.getSendHelper().sendNullMessage(recipientId);
-        }
+        context.getAccount().getAccountData(accountId).getSessionStore().archiveSessions(serviceId);
+        context.getSendHelper().sendNullMessage(recipientId);
     }
 
     @Override

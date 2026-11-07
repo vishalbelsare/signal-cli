@@ -1,105 +1,110 @@
 package org.asamk.signal.manager;
 
+import com.google.i18n.phonenumbers.PhoneNumberUtil;
+
+import org.asamk.signal.manager.api.AlreadyReceivingException;
+import org.asamk.signal.manager.api.AttachmentInvalidException;
+import org.asamk.signal.manager.api.CallInfo;
+import org.asamk.signal.manager.api.CallOffer;
+import org.asamk.signal.manager.api.CaptchaRejectedException;
+import org.asamk.signal.manager.api.CaptchaRequiredException;
 import org.asamk.signal.manager.api.Configuration;
 import org.asamk.signal.manager.api.Device;
+import org.asamk.signal.manager.api.DeviceLimitExceededException;
+import org.asamk.signal.manager.api.DeviceLinkUrl;
 import org.asamk.signal.manager.api.Group;
+import org.asamk.signal.manager.api.GroupId;
+import org.asamk.signal.manager.api.GroupInviteLinkUrl;
+import org.asamk.signal.manager.api.GroupNotFoundException;
+import org.asamk.signal.manager.api.GroupSendingNotAllowedException;
 import org.asamk.signal.manager.api.Identity;
+import org.asamk.signal.manager.api.IdentityVerificationCode;
 import org.asamk.signal.manager.api.InactiveGroupLinkException;
+import org.asamk.signal.manager.api.IncorrectPinException;
 import org.asamk.signal.manager.api.InvalidDeviceLinkException;
 import org.asamk.signal.manager.api.InvalidStickerException;
+import org.asamk.signal.manager.api.InvalidUsernameException;
+import org.asamk.signal.manager.api.LastGroupAdminException;
 import org.asamk.signal.manager.api.Message;
 import org.asamk.signal.manager.api.MessageEnvelope;
+import org.asamk.signal.manager.api.NonNormalizedPhoneNumberException;
+import org.asamk.signal.manager.api.NotAGroupMemberException;
+import org.asamk.signal.manager.api.NotPrimaryDeviceException;
 import org.asamk.signal.manager.api.Pair;
+import org.asamk.signal.manager.api.PendingAdminApprovalException;
+import org.asamk.signal.manager.api.PinLockMissingException;
+import org.asamk.signal.manager.api.PinLockedException;
+import org.asamk.signal.manager.api.RateLimitException;
+import org.asamk.signal.manager.api.ReceiveConfig;
+import org.asamk.signal.manager.api.Recipient;
 import org.asamk.signal.manager.api.RecipientIdentifier;
 import org.asamk.signal.manager.api.SendGroupMessageResults;
+import org.asamk.signal.manager.api.SendMessageResult;
 import org.asamk.signal.manager.api.SendMessageResults;
 import org.asamk.signal.manager.api.StickerPack;
+import org.asamk.signal.manager.api.StickerPackId;
+import org.asamk.signal.manager.api.StickerPackInvalidException;
 import org.asamk.signal.manager.api.StickerPackUrl;
+import org.asamk.signal.manager.api.TurnServer;
 import org.asamk.signal.manager.api.TypingAction;
 import org.asamk.signal.manager.api.UnregisteredRecipientException;
 import org.asamk.signal.manager.api.UpdateGroup;
-import org.asamk.signal.manager.config.ServiceConfig;
-import org.asamk.signal.manager.config.ServiceEnvironment;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.groups.GroupInviteLinkUrl;
-import org.asamk.signal.manager.groups.GroupNotFoundException;
-import org.asamk.signal.manager.groups.GroupSendingNotAllowedException;
-import org.asamk.signal.manager.groups.LastGroupAdminException;
-import org.asamk.signal.manager.groups.NotAGroupMemberException;
-import org.asamk.signal.manager.storage.SignalAccount;
-import org.asamk.signal.manager.storage.identities.TrustNewIdentity;
-import org.asamk.signal.manager.storage.recipients.Contact;
-import org.asamk.signal.manager.storage.recipients.Profile;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
-import org.whispersystems.signalservice.api.util.PhoneNumberFormatter;
+import org.asamk.signal.manager.api.UpdateProfile;
+import org.asamk.signal.manager.api.UserStatus;
+import org.asamk.signal.manager.api.UsernameLinkUrl;
+import org.asamk.signal.manager.api.UsernameStatus;
+import org.asamk.signal.manager.api.VerificationMethodNotAvailableException;
+import org.signal.core.util.UuidUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
-import java.net.URI;
+import java.io.InputStream;
 import java.time.Duration;
-import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 
 public interface Manager extends Closeable {
 
-    static Manager init(
-            String number,
-            File settingsPath,
-            ServiceEnvironment serviceEnvironment,
-            String userAgent,
-            TrustNewIdentity trustNewIdentity
-    ) throws IOException, NotRegisteredException {
-        var pathConfig = PathConfig.createDefault(settingsPath);
-
-        if (!SignalAccount.userExists(pathConfig.dataPath(), number)) {
-            throw new NotRegisteredException();
-        }
-
-        var account = SignalAccount.load(pathConfig.dataPath(), number, true, trustNewIdentity);
-
-        if (!account.isRegistered()) {
-            account.close();
-            throw new NotRegisteredException();
-        }
-
-        account.initDatabase();
-        final var serviceEnvironmentConfig = ServiceConfig.getServiceEnvironmentConfig(serviceEnvironment, userAgent);
-
-        return new ManagerImpl(account, pathConfig, serviceEnvironmentConfig, userAgent);
-    }
-
-    static void initLogger() {
-        LibSignalLogger.initLogger();
-    }
-
     static boolean isValidNumber(final String e164Number, final String countryCode) {
-        return PhoneNumberFormatter.isValidNumber(e164Number, countryCode);
+        return PhoneNumberUtil.getInstance().isPossibleNumber(e164Number, countryCode);
     }
 
-    static List<String> getAllLocalAccountNumbers(File settingsPath) {
-        var pathConfig = PathConfig.createDefault(settingsPath);
-        final var dataPath = pathConfig.dataPath();
-        final var files = dataPath.listFiles();
+    static boolean isValidAci(final String aci) {
+        return UuidUtil.INSTANCE.isUuid(aci);
+    }
 
-        if (files == null) {
-            return List.of();
+    static boolean isSignalClientAvailable() {
+        final Logger logger = LoggerFactory.getLogger(Manager.class);
+        try {
+            try {
+                org.signal.libsignal.internal.Native.UuidCiphertext_CheckValidContents(new byte[0]);
+            } catch (Exception e) {
+                logger.trace("Expected exception when checking libsignal-client: {}", e.getMessage());
+            }
+            return true;
+        } catch (UnsatisfiedLinkError e) {
+            logger.warn("Failed to call libsignal-client: {}", e.getMessage());
+            return false;
         }
-
-        return Arrays.stream(files)
-                .filter(File::isFile)
-                .map(File::getName)
-                .filter(file -> PhoneNumberFormatter.isValidNumber(file, null))
-                .toList();
     }
 
     String getSelfNumber();
 
-    void checkAccountState() throws IOException;
+    String getSelfACI();
+
+    /**
+     * Returns the phone number for numbered accounts, or the ACI for numberless accounts.
+     */
+    default String getSelfIdentifier() {
+        final var number = getSelfNumber();
+        return number != null ? number : getSelfACI();
+    }
 
     /**
      * This is used for checking a set of phone numbers for registration on Signal
@@ -108,79 +113,141 @@ public interface Manager extends Closeable {
      * @return A map of numbers to canonicalized number and uuid. If a number is not registered the uuid is null.
      * @throws IOException if it's unable to get the contacts to check if they're registered
      */
-    Map<String, Pair<String, UUID>> areUsersRegistered(Set<String> numbers) throws IOException;
+    Map<String, UserStatus> getUserStatus(Set<String> numbers) throws IOException, RateLimitException;
 
-    void updateAccountAttributes(String deviceName) throws IOException;
+    Map<String, UsernameStatus> getUsernameStatus(Set<String> usernames) throws IOException;
+
+    void updateAccountAttributes(
+            String deviceName,
+            Boolean unrestrictedUnidentifiedSender,
+            final Boolean discoverableByNumber,
+            final Boolean numberSharing
+    ) throws IOException;
 
     Configuration getConfiguration();
 
-    void updateConfiguration(Configuration configuration) throws IOException, NotMasterDeviceException;
+    void updateConfiguration(Configuration configuration) throws NotPrimaryDeviceException;
 
     /**
-     * @param givenName  if null, the previous givenName will be kept
-     * @param familyName if null, the previous familyName will be kept
-     * @param about      if null, the previous about text will be kept
-     * @param aboutEmoji if null, the previous about emoji will be kept
-     * @param avatar     if avatar is null the image from the local avatar store is used (if present),
+     * Update the user's profile.
+     * If a field is null, the previous value will be kept.
      */
-    void setProfile(
-            String givenName, String familyName, String about, String aboutEmoji, Optional<File> avatar
-    ) throws IOException;
+    void updateProfile(UpdateProfile updateProfile) throws IOException;
+
+    String getUsername();
+
+    UsernameLinkUrl getUsernameLink();
+
+    /**
+     * Set a username for the account.
+     * If the username is null, it will be deleted.
+     */
+    void setUsername(String username) throws IOException, InvalidUsernameException;
+
+    /**
+     * Set a username for the account.
+     * If the username is null, it will be deleted.
+     */
+    void deleteUsername() throws IOException;
+
+    void startChangeNumber(
+            String newNumber,
+            boolean voiceVerification,
+            String captcha
+    ) throws RateLimitException, IOException, CaptchaRequiredException, NonNormalizedPhoneNumberException, NotPrimaryDeviceException, VerificationMethodNotAvailableException;
+
+    void finishChangeNumber(
+            String newNumber,
+            String verificationCode,
+            String pin
+    ) throws IncorrectPinException, PinLockedException, IOException, NotPrimaryDeviceException, PinLockMissingException;
 
     void unregister() throws IOException;
 
     void deleteAccount() throws IOException;
 
-    void submitRateLimitRecaptchaChallenge(String challenge, String captcha) throws IOException;
+    void submitRateLimitRecaptchaChallenge(
+            String challenge,
+            String captcha
+    ) throws IOException, CaptchaRejectedException;
 
     List<Device> getLinkedDevices() throws IOException;
 
-    void removeLinkedDevices(int deviceId) throws IOException;
+    void updateLinkedDevice(int deviceId, String name) throws IOException, NotPrimaryDeviceException;
 
-    void addDeviceLink(URI linkUri) throws IOException, InvalidDeviceLinkException;
+    void removeLinkedDevices(int deviceId) throws IOException, NotPrimaryDeviceException;
 
-    void setRegistrationLockPin(Optional<String> pin) throws IOException, NotMasterDeviceException;
+    void addDeviceLink(DeviceLinkUrl linkUri) throws IOException, InvalidDeviceLinkException, NotPrimaryDeviceException, DeviceLimitExceededException;
 
-    Profile getRecipientProfile(RecipientIdentifier.Single recipient) throws IOException, UnregisteredRecipientException;
+    void setRegistrationLockPin(Optional<String> pin) throws IOException, NotPrimaryDeviceException;
 
     List<Group> getGroups();
 
+    List<Group> getGroups(Collection<GroupId> groupIds);
+
     SendGroupMessageResults quitGroup(
-            GroupId groupId, Set<RecipientIdentifier.Single> groupAdmins
+            GroupId groupId,
+            Set<RecipientIdentifier.Single> groupAdmins
     ) throws GroupNotFoundException, IOException, NotAGroupMemberException, LastGroupAdminException, UnregisteredRecipientException;
 
     void deleteGroup(GroupId groupId) throws IOException;
 
+    SendGroupMessageResults terminateGroup(
+            GroupId groupId
+    ) throws IOException, GroupNotFoundException, NotAGroupMemberException;
+
     Pair<GroupId, SendGroupMessageResults> createGroup(
-            String name, Set<RecipientIdentifier.Single> members, File avatarFile
+            String name,
+            Set<RecipientIdentifier.Single> members,
+            String avatarFile
     ) throws IOException, AttachmentInvalidException, UnregisteredRecipientException;
 
     SendGroupMessageResults updateGroup(
-            final GroupId groupId, final UpdateGroup updateGroup
+            final GroupId groupId,
+            final UpdateGroup updateGroup
     ) throws IOException, GroupNotFoundException, AttachmentInvalidException, NotAGroupMemberException, GroupSendingNotAllowedException, UnregisteredRecipientException;
 
     Pair<GroupId, SendGroupMessageResults> joinGroup(
             GroupInviteLinkUrl inviteLinkUrl
-    ) throws IOException, InactiveGroupLinkException;
+    ) throws IOException, InactiveGroupLinkException, PendingAdminApprovalException;
 
     SendMessageResults sendTypingMessage(
-            TypingAction action, Set<RecipientIdentifier> recipients
+            TypingAction action,
+            Set<RecipientIdentifier> recipients
     ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException;
 
-    SendMessageResults sendReadReceipt(
-            RecipientIdentifier.Single sender, List<Long> messageIds
-    ) throws IOException;
+    SendMessageResults sendReadReceipt(RecipientIdentifier.Single sender, List<Long> messageIds);
 
-    SendMessageResults sendViewedReceipt(
-            RecipientIdentifier.Single sender, List<Long> messageIds
-    ) throws IOException;
+    SendMessageResults sendViewedReceipt(RecipientIdentifier.Single sender, List<Long> messageIds);
 
     SendMessageResults sendMessage(
-            Message message, Set<RecipientIdentifier> recipients
+            Message message,
+            Set<RecipientIdentifier> recipients,
+            boolean notifySelf
     ) throws IOException, AttachmentInvalidException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException, InvalidStickerException;
 
+    SendMessageResults sendEditMessage(
+            Message message,
+            Set<RecipientIdentifier> recipients,
+            long editTargetTimestamp
+    ) throws IOException, AttachmentInvalidException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException, InvalidStickerException;
+
+    /**
+     * Post a file attachment story to "My Story" or to a group.
+     *
+     * @param attachment    path to the file to upload and post as a story
+     * @param allowsReplies whether other users are allowed to reply to this story
+     * @param groupId       if present, post the story to this group instead of "My Story"
+     */
+    SendMessageResults sendStory(
+            String attachment,
+            boolean allowsReplies,
+            Optional<GroupId> groupId
+    ) throws IOException, AttachmentInvalidException, GroupNotFoundException, NotAGroupMemberException;
+
     SendMessageResults sendRemoteDeleteMessage(
-            long targetSentTimestamp, Set<RecipientIdentifier> recipients
+            long targetSentTimestamp,
+            Set<RecipientIdentifier> recipients
     ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException;
 
     SendMessageResults sendMessageReaction(
@@ -188,32 +255,103 @@ public interface Manager extends Closeable {
             boolean remove,
             RecipientIdentifier.Single targetAuthor,
             long targetSentTimestamp,
-            Set<RecipientIdentifier> recipients
+            Set<RecipientIdentifier> recipients,
+            final boolean notifySelf,
+            final boolean isStory
     ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
 
-    SendMessageResults sendEndSessionMessage(Set<RecipientIdentifier.Single> recipients) throws IOException;
+    SendMessageResults sendAdminDelete(
+            RecipientIdentifier.Single targetAuthor,
+            long targetSentTimestamp,
+            Set<RecipientIdentifier.Group> recipients,
+            boolean notifySelf,
+            boolean isStory
+    ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
+
+    SendMessageResults sendPinMessage(
+            int pinDuration,
+            RecipientIdentifier.Single targetAuthor,
+            long targetSentTimestamp,
+            Set<RecipientIdentifier> recipients,
+            boolean notifySelf,
+            boolean isStory
+    ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
+
+    SendMessageResults sendUnpinMessage(
+            RecipientIdentifier.Single targetAuthor,
+            long targetSentTimestamp,
+            Set<RecipientIdentifier> recipients,
+            boolean notifySelf,
+            boolean isStory
+    ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
+
+    SendMessageResults sendPaymentNotificationMessage(
+            byte[] receipt,
+            String note,
+            RecipientIdentifier.Single recipient
+    ) throws IOException;
+
+    void sendEndSessionMessage(Set<RecipientIdentifier.Single> recipients) throws IOException;
+
+    SendMessageResults sendMessageRequestResponse(
+            MessageEnvelope.Sync.MessageRequestResponse.Type type,
+            Set<RecipientIdentifier> recipientIdentifiers
+    );
+
+    SendMessageResults sendPollCreateMessage(
+            final String question,
+            final boolean allowMultiple,
+            final List<String> options,
+            final Set<RecipientIdentifier> recipients,
+            final boolean notifySelf
+    ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
+
+    SendMessageResults sendPollVoteMessage(
+            final RecipientIdentifier.Single targetAuthor,
+            final long targetSentTimestamp,
+            final List<Integer> optionIndexes,
+            final int voteCount,
+            final Set<RecipientIdentifier> recipients,
+            final boolean notifySelf
+    ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
+
+    SendMessageResults sendPollTerminateMessage(
+            final long targetSentTimestamp,
+            final Set<RecipientIdentifier> recipients,
+            final boolean notifySelf
+    ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException, UnregisteredRecipientException;
+
+    void hideRecipient(RecipientIdentifier.Single recipient);
 
     void deleteRecipient(RecipientIdentifier.Single recipient);
 
     void deleteContact(RecipientIdentifier.Single recipient);
 
     void setContactName(
-            RecipientIdentifier.Single recipient, String name
-    ) throws NotMasterDeviceException, IOException, UnregisteredRecipientException;
+            final RecipientIdentifier.Single recipient,
+            final String givenName,
+            final String familyName,
+            final String nickGivenName,
+            final String nickFamilyName,
+            final String note
+    ) throws UnregisteredRecipientException;
 
-    void setContactBlocked(
-            RecipientIdentifier.Single recipient, boolean blocked
-    ) throws NotMasterDeviceException, IOException, UnregisteredRecipientException;
+    void setContactsBlocked(
+            Collection<RecipientIdentifier.Single> recipient,
+            boolean blocked
+    ) throws NotPrimaryDeviceException, IOException, UnregisteredRecipientException;
 
-    void setGroupBlocked(
-            GroupId groupId, boolean blocked
-    ) throws GroupNotFoundException, IOException, NotMasterDeviceException;
+    void setGroupsBlocked(
+            Collection<GroupId> groupId,
+            boolean blocked
+    ) throws GroupNotFoundException, IOException, NotPrimaryDeviceException;
 
     /**
      * Change the expiration timer for a contact
      */
     void setExpirationTimer(
-            RecipientIdentifier.Single recipient, int messageExpirationTimer
+            RecipientIdentifier.Single recipient,
+            int messageExpirationTimer
     ) throws IOException, UnregisteredRecipientException;
 
     /**
@@ -223,6 +361,8 @@ public interface Manager extends Closeable {
      * @return if successful, returns the URL to install the sticker pack in the signal app
      */
     StickerPackUrl uploadStickerPack(File path) throws IOException, StickerPackInvalidException;
+
+    void installStickerPack(StickerPackUrl url) throws IOException;
 
     List<StickerPack> getStickerPacks();
 
@@ -249,22 +389,26 @@ public interface Manager extends Closeable {
     /**
      * Receive new messages from server, returns if no new message arrive in a timespan of timeout.
      */
-    void receiveMessages(Duration timeout, ReceiveMessageHandler handler) throws IOException;
+    void receiveMessages(
+            Optional<Duration> timeout,
+            Optional<Integer> maxMessages,
+            ReceiveMessageHandler handler
+    ) throws IOException, AlreadyReceivingException;
 
-    /**
-     * Receive new messages from server, returns only if the thread is interrupted.
-     */
-    void receiveMessages(ReceiveMessageHandler handler) throws IOException;
+    void stopReceiveMessages();
 
-    void setIgnoreAttachments(boolean ignoreAttachments);
-
-    boolean hasCaughtUpWithOldMessages();
+    void setReceiveConfig(ReceiveConfig receiveConfig);
 
     boolean isContactBlocked(RecipientIdentifier.Single recipient);
 
     void sendContacts() throws IOException;
 
-    List<Pair<RecipientAddress, Contact>> getContacts();
+    List<Recipient> getRecipients(
+            boolean onlyContacts,
+            Optional<Boolean> blocked,
+            Collection<RecipientIdentifier.Single> address,
+            Optional<String> name
+    );
 
     String getContactOrProfileName(RecipientIdentifier.Single recipient);
 
@@ -275,33 +419,13 @@ public interface Manager extends Closeable {
     List<Identity> getIdentities(RecipientIdentifier.Single recipient);
 
     /**
-     * Trust this the identity with this fingerprint
+     * Trust this the identity with this fingerprint/safetyNumber
      *
-     * @param recipient   account of the identity
-     * @param fingerprint Fingerprint
+     * @param recipient account of the identity
      */
     boolean trustIdentityVerified(
-            RecipientIdentifier.Single recipient, byte[] fingerprint
-    ) throws UnregisteredRecipientException;
-
-    /**
-     * Trust this the identity with this safety number
-     *
-     * @param recipient    account of the identity
-     * @param safetyNumber Safety number
-     */
-    boolean trustIdentityVerifiedSafetyNumber(
-            RecipientIdentifier.Single recipient, String safetyNumber
-    ) throws UnregisteredRecipientException;
-
-    /**
-     * Trust this the identity with this scannable safety number
-     *
-     * @param recipient    account of the identity
-     * @param safetyNumber Scannable safety number
-     */
-    boolean trustIdentityVerifiedSafetyNumber(
-            RecipientIdentifier.Single recipient, byte[] safetyNumber
+            RecipientIdentifier.Single recipient,
+            IdentityVerificationCode verificationCode
     ) throws UnregisteredRecipientException;
 
     /**
@@ -311,10 +435,65 @@ public interface Manager extends Closeable {
      */
     boolean trustIdentityAllKeys(RecipientIdentifier.Single recipient) throws UnregisteredRecipientException;
 
+    void addAddressChangedListener(Runnable listener);
+
     void addClosedListener(Runnable listener);
 
+    InputStream retrieveAttachment(final String id) throws IOException;
+
+    InputStream retrieveContactAvatar(final RecipientIdentifier.Single recipient) throws IOException, UnregisteredRecipientException;
+
+    InputStream retrieveProfileAvatar(final RecipientIdentifier.Single recipient) throws IOException, UnregisteredRecipientException;
+
+    InputStream retrieveGroupAvatar(final GroupId groupId) throws IOException;
+
+    InputStream retrieveSticker(final StickerPackId stickerPackId, final int stickerId) throws IOException;
+
+    // --- Voice call methods ---
+
+    CallInfo startCall(RecipientIdentifier.Single recipient) throws IOException, UnregisteredRecipientException;
+
+    CallInfo acceptCall(long callId) throws IOException;
+
+    void hangupCall(long callId) throws IOException;
+
+    SendMessageResult rejectCall(long callId) throws IOException;
+
+    List<CallInfo> listActiveCalls();
+
+    void sendCallOffer(
+            RecipientIdentifier.Single recipient,
+            CallOffer offer
+    ) throws IOException, UnregisteredRecipientException;
+
+    void sendCallAnswer(
+            RecipientIdentifier.Single recipient,
+            long callId,
+            byte[] answerOpaque
+    ) throws IOException, UnregisteredRecipientException;
+
+    void sendIceUpdate(
+            RecipientIdentifier.Single recipient,
+            long callId,
+            List<byte[]> iceCandidates
+    ) throws IOException, UnregisteredRecipientException;
+
+    void sendHangup(
+            RecipientIdentifier.Single recipient,
+            long callId,
+            MessageEnvelope.Call.Hangup.Type type
+    ) throws IOException, UnregisteredRecipientException;
+
+    void sendBusy(RecipientIdentifier.Single recipient, long callId) throws IOException, UnregisteredRecipientException;
+
+    List<TurnServer> getTurnServerInfo() throws IOException;
+
     @Override
-    void close() throws IOException;
+    void close();
+
+    void addCallEventListener(CallEventListener listener);
+
+    void removeCallEventListener(CallEventListener listener);
 
     interface ReceiveMessageHandler {
 
@@ -322,5 +501,10 @@ public interface Manager extends Closeable {
         };
 
         void handleMessage(MessageEnvelope envelope, Throwable e);
+    }
+
+    interface CallEventListener {
+
+        void handleCallEvent(CallInfo callInfo, String reason);
     }
 }

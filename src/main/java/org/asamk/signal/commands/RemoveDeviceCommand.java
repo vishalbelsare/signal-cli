@@ -5,7 +5,9 @@ import net.sourceforge.argparse4j.inf.Subparser;
 
 import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.commands.exceptions.IOErrorException;
+import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.NotPrimaryDeviceException;
 import org.asamk.signal.output.OutputWriter;
 
 import java.io.IOException;
@@ -28,11 +30,15 @@ public class RemoveDeviceCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         try {
             final var deviceId = ns.getInt("device-id");
             m.removeLinkedDevices(deviceId);
+        } catch (NotPrimaryDeviceException e) {
+            throw new UserErrorException("This command doesn't work on linked devices.");
         } catch (IOException e) {
             throw new IOErrorException("Error while removing device: " + e.getMessage(), e);
         }

@@ -10,11 +10,11 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
-import java.io.StringWriter;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.Charset;
@@ -34,19 +34,18 @@ import static java.nio.file.attribute.PosixFilePermission.OWNER_WRITE;
 
 public class IOUtils {
 
-    private final static Logger logger = LoggerFactory.getLogger(IOUtils.class);
+    private static final Logger logger = LoggerFactory.getLogger(IOUtils.class);
 
     private IOUtils() {
     }
 
+    public static Charset getConsoleCharset() {
+        final var console = System.console();
+        return console == null ? Charset.defaultCharset() : console.charset();
+    }
+
     public static String readAll(InputStream in, Charset charset) throws IOException {
-        var output = new StringWriter();
-        var buffer = new byte[4096];
-        int n;
-        while (-1 != (n = in.read(buffer))) {
-            output.write(new String(buffer, 0, n, charset));
-        }
-        return output.toString();
+        return new String(in.readAllBytes(), charset);
     }
 
     public static void createPrivateDirectories(File file) throws IOException {
@@ -88,6 +87,9 @@ public class IOUtils {
         return () -> {
             try {
                 return bufferedReader.readLine();
+            } catch (ClosedChannelException ignored) {
+                logger.trace("Line supplier has been interrupted.");
+                return null;
             } catch (IOException e) {
                 logger.error("Error occurred while reading line", e);
                 return null;
@@ -116,13 +118,13 @@ public class IOUtils {
         return socketAddress;
     }
 
-    public static UnixDomainPrincipal getUnixDomainPrincipal(final SocketChannel channel) throws IOException {
+    public static String getUnixDomainPrincipal(final SocketChannel channel) throws IOException {
         UnixDomainPrincipal principal = null;
         try {
             principal = channel.getOption(ExtendedSocketOptions.SO_PEERCRED);
-        } catch (UnsupportedOperationException ignored) {
+        } catch (UnsupportedOperationException | NoClassDefFoundError ignored) {
         }
-        return principal;
+        return principal == null ? null : principal.toString();
     }
 
     public static ServerSocketChannel bindSocket(final SocketAddress address) throws IOErrorException {
@@ -133,10 +135,10 @@ public class IOUtils {
                     ? ServerSocketChannel.open(StandardProtocolFamily.UNIX)
                     : ServerSocketChannel.open();
             serverChannel.bind(address);
-            logger.info("Listening on socket: " + address);
+            logger.debug("Listening on socket: " + address);
             postBind(address);
         } catch (IOException e) {
-            throw new IOErrorException("Failed to bind socket: " + e.getMessage(), e);
+            throw new IOErrorException("Failed to bind socket " + address + ": " + e.getMessage(), e);
         }
         return serverChannel;
     }

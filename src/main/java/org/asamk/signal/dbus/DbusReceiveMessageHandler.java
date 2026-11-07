@@ -2,9 +2,9 @@ package org.asamk.signal.dbus;
 
 import org.asamk.Signal;
 import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.GroupId;
 import org.asamk.signal.manager.api.MessageEnvelope;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
+import org.asamk.signal.manager.api.RecipientAddress;
 import org.freedesktop.dbus.connections.impl.DBusConnection;
 import org.freedesktop.dbus.exceptions.DBusException;
 import org.freedesktop.dbus.types.Variant;
@@ -30,7 +30,7 @@ public class DbusReceiveMessageHandler implements Manager.ReceiveMessageHandler 
         try {
             sendDbusMessages(envelope);
         } catch (DBusException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         }
     }
 
@@ -74,32 +74,55 @@ public class DbusReceiveMessageHandler implements Manager.ReceiveMessageHandler 
                         getMessageExtras(message)));
             }
         }
+        if (envelope.edit().isPresent()) {
+            var editMessage = envelope.edit().get();
+            var message = editMessage.dataMessage();
+
+            var groupId = message.groupContext()
+                    .map(MessageEnvelope.Data.GroupContext::groupId)
+                    .map(GroupId::serialize)
+                    .orElseGet(() -> new byte[0]);
+            var isGroupUpdate = message.groupContext()
+                    .map(MessageEnvelope.Data.GroupContext::isGroupUpdate)
+                    .orElse(false);
+            if (!message.isEndSession() && !isGroupUpdate) {
+                conn.sendMessage(new Signal.EditMessageReceived(objectPath,
+                        message.timestamp(),
+                        editMessage.targetSentTimestamp(),
+                        senderString,
+                        groupId,
+                        message.body().orElse(""),
+                        getMessageExtras(message)));
+            }
+        }
         if (envelope.sync().isPresent()) {
             var syncMessage = envelope.sync().get();
             if (syncMessage.sent().isPresent()) {
                 var transcript = syncMessage.sent().get();
 
-                if (transcript.destination().isPresent() || transcript.message().groupContext().isPresent()) {
-                    var message = transcript.message();
-                    var groupId = message.groupContext()
-                            .map(MessageEnvelope.Data.GroupContext::groupId)
-                            .map(GroupId::serialize)
-                            .orElseGet(() -> new byte[0]);
+                if (transcript.message().isPresent()) {
+                    final var dataMessage = transcript.message().get();
+                    if (transcript.destination().isPresent() || dataMessage.groupContext().isPresent()) {
+                        var groupId = dataMessage.groupContext()
+                                .map(MessageEnvelope.Data.GroupContext::groupId)
+                                .map(GroupId::serialize)
+                                .orElseGet(() -> new byte[0]);
 
-                    conn.sendMessage(new Signal.SyncMessageReceived(objectPath,
-                            transcript.message().timestamp(),
-                            senderString,
-                            transcript.destination().map(RecipientAddress::getLegacyIdentifier).orElse(""),
-                            groupId,
-                            message.body().orElse(""),
-                            getAttachments(message)));
-                    conn.sendMessage(new Signal.SyncMessageReceivedV2(objectPath,
-                            transcript.message().timestamp(),
-                            senderString,
-                            transcript.destination().map(RecipientAddress::getLegacyIdentifier).orElse(""),
-                            groupId,
-                            message.body().orElse(""),
-                            getMessageExtras(message)));
+                        conn.sendMessage(new Signal.SyncMessageReceived(objectPath,
+                                dataMessage.timestamp(),
+                                senderString,
+                                transcript.destination().map(RecipientAddress::getLegacyIdentifier).orElse(""),
+                                groupId,
+                                dataMessage.body().orElse(""),
+                                getAttachments(dataMessage)));
+                        conn.sendMessage(new Signal.SyncMessageReceivedV2(objectPath,
+                                dataMessage.timestamp(),
+                                senderString,
+                                transcript.destination().map(RecipientAddress::getLegacyIdentifier).orElse(""),
+                                groupId,
+                                dataMessage.body().orElse(""),
+                                getMessageExtras(dataMessage)));
+                    }
                 }
             }
         }
@@ -108,7 +131,7 @@ public class DbusReceiveMessageHandler implements Manager.ReceiveMessageHandler 
 
     private List<String> getAttachments(MessageEnvelope.Data message) {
         var attachments = new ArrayList<String>();
-        if (message.attachments().size() > 0) {
+        if (!message.attachments().isEmpty()) {
             for (var attachment : message.attachments()) {
                 if (attachment.file().isPresent()) {
                     attachments.add(attachment.file().get().getAbsolutePath());
@@ -120,7 +143,7 @@ public class DbusReceiveMessageHandler implements Manager.ReceiveMessageHandler 
 
     private HashMap<String, Variant<?>> getMessageExtras(MessageEnvelope.Data message) {
         var extras = new HashMap<String, Variant<?>>();
-        if (message.attachments().size() > 0) {
+        if (!message.attachments().isEmpty()) {
             var attachments = message.attachments()
                     .stream()
                     .filter(a -> a.id().isPresent())
@@ -128,7 +151,7 @@ public class DbusReceiveMessageHandler implements Manager.ReceiveMessageHandler 
                     .toList();
             extras.put("attachments", new Variant<>(attachments, "aa{sv}"));
         }
-        if (message.mentions().size() > 0) {
+        if (!message.mentions().isEmpty()) {
             var mentions = message.mentions().stream().map(this::getMentionMap).toList();
             extras.put("mentions", new Variant<>(mentions, "aa{sv}"));
         }
@@ -142,7 +165,10 @@ public class DbusReceiveMessageHandler implements Manager.ReceiveMessageHandler 
         }
         if (message.remoteDeleteId().isPresent()) {
             extras.put("remoteDelete",
-                    new Variant<>(Map.of("timestamp", new Variant<>(message.remoteDeleteId().get())), "a{sv}"));
+                    new Variant<>(Map.of("targetTimestamp",
+                            new Variant<>(message.remoteDeleteId().get()),
+                            "timestamp",
+                            new Variant<>(message.remoteDeleteId().get())), "a{sv}"));
         }
         if (message.sticker().isPresent()) {
             final var sticker = message.sticker().get();

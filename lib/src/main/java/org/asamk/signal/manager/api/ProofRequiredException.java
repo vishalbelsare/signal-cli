@@ -10,12 +10,19 @@ public class ProofRequiredException extends Exception {
 
     private final String token;
     private final Set<Option> options;
-    private final long retryAfterSeconds;
+    private final long retryAfterMilliseconds;
 
-    public ProofRequiredException(org.whispersystems.signalservice.api.push.exceptions.ProofRequiredException e) {
-        this.token = e.getToken();
-        this.options = e.getOptions().stream().map(Option::from).collect(Collectors.toSet());
-        this.retryAfterSeconds = e.getRetryAfterSeconds();
+    public ProofRequiredException(final String token, final Set<Option> options, final long retryAfterMilliseconds) {
+        super("Rate limit");
+        this.token = token;
+        this.options = options;
+        this.retryAfterMilliseconds = retryAfterMilliseconds;
+    }
+
+    public static ProofRequiredException from(org.whispersystems.signalservice.api.push.exceptions.ProofRequiredException e) {
+        return new ProofRequiredException(e.getToken(),
+                e.getOptions().stream().map(Option::from).collect(Collectors.toSet()),
+                e.getRetryAfterSeconds() * 1000L);
     }
 
     public String getToken() {
@@ -26,17 +33,17 @@ public class ProofRequiredException extends Exception {
         return options;
     }
 
-    public long getRetryAfterSeconds() {
-        return retryAfterSeconds;
+    public long getRetryAfterMilliseconds() {
+        return retryAfterMilliseconds;
     }
 
     public enum Option {
-        RECAPTCHA,
+        CAPTCHA,
         PUSH_CHALLENGE;
 
         static Option from(org.whispersystems.signalservice.api.push.exceptions.ProofRequiredException.Option option) {
             return switch (option) {
-                case RECAPTCHA -> RECAPTCHA;
+                case CAPTCHA -> CAPTCHA;
                 case PUSH_CHALLENGE -> PUSH_CHALLENGE;
             };
         }

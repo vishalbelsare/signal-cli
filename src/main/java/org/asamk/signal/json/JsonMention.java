@@ -4,6 +4,9 @@ import org.asamk.signal.manager.api.MessageEnvelope;
 
 import java.util.UUID;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "Mention")
 public record JsonMention(@Deprecated String name, String number, String uuid, int start, int length) {
 
     static JsonMention from(MessageEnvelope.Data.Mention mention) {

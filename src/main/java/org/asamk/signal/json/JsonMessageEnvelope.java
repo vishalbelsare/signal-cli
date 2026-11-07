@@ -3,13 +3,16 @@ package org.asamk.signal.json;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import org.asamk.signal.manager.Manager;
-import org.asamk.signal.manager.UntrustedIdentityException;
 import org.asamk.signal.manager.api.MessageEnvelope;
+import org.asamk.signal.manager.api.RecipientAddress;
 import org.asamk.signal.manager.api.RecipientIdentifier;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
+import org.asamk.signal.manager.api.UntrustedIdentityException;
 
 import java.util.UUID;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "MessageEnvelope")
 public record JsonMessageEnvelope(
         @Deprecated String source,
         String sourceNumber,
@@ -17,16 +20,18 @@ public record JsonMessageEnvelope(
         String sourceName,
         Integer sourceDevice,
         long timestamp,
+        long serverReceivedTimestamp,
+        long serverDeliveredTimestamp,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonDataMessage dataMessage,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonEditMessage editMessage,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonStoryMessage storyMessage,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonSyncMessage syncMessage,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonCallMessage callMessage,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonReceiptMessage receiptMessage,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonTypingMessage typingMessage
 ) {
 
-    public static JsonMessageEnvelope from(
-            MessageEnvelope envelope, Throwable exception, Manager m
-    ) {
+    public static JsonMessageEnvelope from(MessageEnvelope envelope, Throwable exception, Manager m) {
         final RecipientAddress sourceAddress;
         final Integer sourceDevice;
         if (envelope.sourceAddress().isPresent()) {
@@ -48,8 +53,7 @@ public record JsonMessageEnvelope(
             source = sourceAddress.getLegacyIdentifier();
             sourceNumber = sourceAddress.number().orElse(null);
             sourceUuid = sourceAddress.uuid().map(UUID::toString).orElse(null);
-            sourceName = m.getContactOrProfileName(RecipientIdentifier.Single.fromAddress(envelope.sourceAddress()
-                    .get()));
+            sourceName = m.getContactOrProfileName(RecipientIdentifier.Single.fromAddress(sourceAddress));
         } else {
             source = null;
             sourceNumber = null;
@@ -57,11 +61,15 @@ public record JsonMessageEnvelope(
             sourceName = null;
         }
         final var timestamp = envelope.timestamp();
+        final var serverReceivedTimestamp = envelope.serverReceivedTimestamp();
+        final var serverDeliveredTimestamp = envelope.serverDeliveredTimestamp();
         final var receiptMessage = envelope.receipt().map(JsonReceiptMessage::from).orElse(null);
         final var typingMessage = envelope.typing().map(JsonTypingMessage::from).orElse(null);
 
-        final var dataMessage = envelope.data().map(JsonDataMessage::from).orElse(null);
-        final var syncMessage = envelope.sync().map(JsonSyncMessage::from).orElse(null);
+        final var dataMessage = envelope.data().map(data -> JsonDataMessage.from(data, m)).orElse(null);
+        final var editMessage = envelope.edit().map(data -> JsonEditMessage.from(data, m)).orElse(null);
+        final var storyMessage = envelope.story().map(JsonStoryMessage::from).orElse(null);
+        final var syncMessage = envelope.sync().map(data -> JsonSyncMessage.from(data, m)).orElse(null);
         final var callMessage = envelope.call().map(JsonCallMessage::from).orElse(null);
 
         return new JsonMessageEnvelope(source,
@@ -70,7 +78,11 @@ public record JsonMessageEnvelope(
                 sourceName,
                 sourceDevice,
                 timestamp,
+                serverReceivedTimestamp,
+                serverDeliveredTimestamp,
                 dataMessage,
+                editMessage,
+                storyMessage,
                 syncMessage,
                 callMessage,
                 receiptMessage,

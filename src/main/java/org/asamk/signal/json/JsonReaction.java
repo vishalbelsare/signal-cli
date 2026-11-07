@@ -4,6 +4,9 @@ import org.asamk.signal.manager.api.MessageEnvelope;
 
 import java.util.UUID;
 
+import io.micronaut.jsonschema.JsonSchema;
+
+@JsonSchema(title = "Reaction")
 public record JsonReaction(
         String emoji,
         @Deprecated String targetAuthor,

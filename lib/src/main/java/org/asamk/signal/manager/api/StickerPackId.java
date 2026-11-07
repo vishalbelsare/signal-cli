@@ -1,5 +1,7 @@
 package org.asamk.signal.manager.api;
 
+import org.signal.core.util.Hex;
+
 import java.util.Arrays;
 
 public class StickerPackId {
@@ -31,5 +33,10 @@ public class StickerPackId {
     @Override
     public int hashCode() {
         return Arrays.hashCode(id);
+    }
+
+    @Override
+    public String toString() {
+        return "StickerPackId{" + Hex.toStringCondensed(id) + '}';
     }
 }

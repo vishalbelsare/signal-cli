@@ -10,12 +10,26 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 
 import org.asamk.signal.manager.storage.recipients.RecipientAddress;
-import org.whispersystems.signalservice.api.util.UuidUtil;
+import org.signal.core.models.ServiceId;
+import org.signal.core.util.UuidUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.whispersystems.signalservice.api.push.ServiceIdType;
 
 import java.io.InvalidObjectException;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Optional;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 public class Utils {
+
+    private static final Logger logger = LoggerFactory.getLogger(Utils.class);
 
     private Utils() {
     }
@@ -42,11 +56,72 @@ public class Utils {
         return node;
     }
 
-    public static RecipientAddress getRecipientAddressFromIdentifier(final String identifier) {
-        if (UuidUtil.isUuid(identifier)) {
-            return new RecipientAddress(UuidUtil.parseOrThrow(identifier));
+    public static RecipientAddress getRecipientAddressFromLegacyIdentifier(final String identifier) {
+        if (UuidUtil.INSTANCE.isUuid(identifier)) {
+            return new RecipientAddress(ServiceId.parseOrThrow(identifier));
         } else {
             return new RecipientAddress(Optional.empty(), Optional.of(identifier));
         }
+    }
+
+    public static int getAccountIdType(ServiceIdType serviceIdType) {
+        return switch (serviceIdType) {
+            case ACI -> 0;
+            case PNI -> 1;
+        };
+    }
+
+    public static <T> T executeQuerySingleRow(
+            PreparedStatement statement,
+            ResultSetMapper<T> mapper
+    ) throws SQLException {
+        final var resultSet = statement.executeQuery();
+        if (!resultSet.next()) {
+            throw new RuntimeException("Expected a row in result set, but none found.");
+        }
+        return mapper.apply(resultSet);
+    }
+
+    public static <T> Optional<T> executeQueryForOptional(
+            PreparedStatement statement,
+            ResultSetMapper<T> mapper
+    ) throws SQLException {
+        final var resultSet = statement.executeQuery();
+        if (!resultSet.next()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(mapper.apply(resultSet));
+    }
+
+    public static <T> Stream<T> executeQueryForStream(
+            PreparedStatement statement,
+            ResultSetMapper<T> mapper
+    ) throws SQLException {
+        final var resultSet = statement.executeQuery();
+
+        return StreamSupport.stream(new Spliterators.AbstractSpliterator<>(Long.MAX_VALUE, Spliterator.ORDERED) {
+            @Override
+            public boolean tryAdvance(final Consumer<? super T> consumer) {
+                try {
+                    if (!resultSet.next()) {
+                        return false;
+                    }
+                    consumer.accept(mapper.apply(resultSet));
+                    return true;
+                } catch (SQLException e) {
+                    logger.warn("Failed to read from database result", e);
+                    throw new RuntimeException(e);
+                }
+            }
+        }, false);
+    }
+
+    public static Long getIdMapper(ResultSet resultSet) throws SQLException {
+        return resultSet.getLong("_id");
+    }
+
+    public interface ResultSetMapper<T> {
+
+        T apply(ResultSet resultSet) throws SQLException;
     }
 }

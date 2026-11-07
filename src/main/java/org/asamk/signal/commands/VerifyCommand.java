@@ -11,6 +11,7 @@ import org.asamk.signal.commands.exceptions.IOErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.manager.RegistrationManager;
 import org.asamk.signal.manager.api.IncorrectPinException;
+import org.asamk.signal.manager.api.PinLockMissingException;
 import org.asamk.signal.manager.api.PinLockedException;
 import org.asamk.signal.output.JsonWriter;
 import org.slf4j.Logger;
@@ -18,10 +19,11 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.SequencedCollection;
 
 public class VerifyCommand implements RegistrationCommand, JsonRpcRegistrationCommand<VerifyCommand.VerifyParams> {
 
-    private final static Logger logger = LoggerFactory.getLogger(VerifyCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(VerifyCommand.class);
 
     @Override
     public String getName() {
@@ -49,19 +51,23 @@ public class VerifyCommand implements RegistrationCommand, JsonRpcRegistrationCo
     }
 
     @Override
-    public List<OutputType> getSupportedOutputTypes() {
+    public SequencedCollection<OutputType> getSupportedOutputTypes() {
         return List.of(OutputType.PLAIN_TEXT, OutputType.JSON);
     }
 
     @Override
     public void handleCommand(
-            final VerifyParams request, final RegistrationManager m, final JsonWriter jsonWriter
+            final VerifyParams request,
+            final RegistrationManager m,
+            final JsonWriter jsonWriter
     ) throws CommandException {
         verify(m, request.verificationCode(), request.pin());
     }
 
     private void verify(
-            final RegistrationManager m, final String verificationCode, final String pin
+            final RegistrationManager m,
+            final String verificationCode,
+            final String pin
     ) throws UserErrorException, IOErrorException {
         try {
             m.verifyAccount(verificationCode, pin);
@@ -72,10 +78,12 @@ public class VerifyCommand implements RegistrationCommand, JsonRpcRegistrationCo
                             + "\nUse '--pin PIN_CODE' to specify the registration lock PIN");
         } catch (IncorrectPinException e) {
             throw new UserErrorException("Verification failed! Invalid pin, tries remaining: " + e.getTriesRemaining());
+        } catch (PinLockMissingException e) {
+            throw new UserErrorException("Account is pin locked, but pin data has been deleted on the server.");
         } catch (IOException e) {
             throw new IOErrorException("Verify error: " + e.getMessage(), e);
         }
     }
 
-    record VerifyParams(String verificationCode, String pin) {}
+    public record VerifyParams(String verificationCode, String pin) {}
 }

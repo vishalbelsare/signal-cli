@@ -1,15 +1,18 @@
 package org.asamk.signal;
 
+import java.util.Optional;
+
 public class BaseConfig {
 
-    public final static String PROJECT_NAME = BaseConfig.class.getPackage().getImplementationTitle();
-    public final static String PROJECT_VERSION = BaseConfig.class.getPackage().getImplementationVersion();
+    public static final String PROJECT_NAME = BaseConfig.class.getPackage().getImplementationTitle();
+    public static final String PROJECT_VERSION = BaseConfig.class.getPackage().getImplementationVersion();
 
-    final static String USER_AGENT_SIGNAL_ANDROID = "Signal-Android/5.22.3";
-    final static String USER_AGENT_SIGNAL_CLI = PROJECT_NAME == null
+    static final String USER_AGENT_SIGNAL_ANDROID = Optional.ofNullable(System.getenv("SIGNAL_CLI_USER_AGENT"))
+            .orElse("Signal-Android/8.35.1");
+    static final String USER_AGENT_SIGNAL_CLI = PROJECT_NAME == null
             ? "signal-cli"
             : PROJECT_NAME + "/" + PROJECT_VERSION;
-    final static String USER_AGENT = USER_AGENT_SIGNAL_ANDROID + " " + USER_AGENT_SIGNAL_CLI;
+    static final String USER_AGENT = USER_AGENT_SIGNAL_ANDROID + " " + USER_AGENT_SIGNAL_CLI;
 
     private BaseConfig() {
     }

@@ -1,9 +1,7 @@
 package org.asamk.signal.manager.api;
 
 import org.asamk.signal.manager.helper.RecipientAddressResolver;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
 import org.asamk.signal.manager.storage.recipients.RecipientResolver;
-import org.whispersystems.libsignal.IdentityKey;
 
 public record SendMessageResult(
         RecipientAddress address,
@@ -11,29 +9,13 @@ public record SendMessageResult(
         boolean isNetworkFailure,
         boolean isUnregisteredFailure,
         boolean isIdentityFailure,
-        ProofRequiredException proofRequiredFailure
+        RateLimitException rateLimitException,
+        ProofRequiredException proofRequiredFailure,
+        boolean isInvalidPreKeyFailure
 ) {
 
-    public static SendMessageResult success(RecipientAddress address) {
-        return new SendMessageResult(address, true, false, false, false, null);
-    }
-
-    public static SendMessageResult networkFailure(RecipientAddress address) {
-        return new SendMessageResult(address, false, true, false, false, null);
-    }
-
     public static SendMessageResult unregisteredFailure(RecipientAddress address) {
-        return new SendMessageResult(address, false, false, true, false, null);
-    }
-
-    public static SendMessageResult identityFailure(RecipientAddress address, IdentityKey identityKey) {
-        return new SendMessageResult(address, false, false, false, true, null);
-    }
-
-    public static SendMessageResult proofRequiredFailure(
-            RecipientAddress address, ProofRequiredException proofRequiredException
-    ) {
-        return new SendMessageResult(address, false, true, false, false, proofRequiredException);
+        return new SendMessageResult(address, false, false, true, false, null, null, false);
     }
 
     public static SendMessageResult from(
@@ -41,16 +23,30 @@ public record SendMessageResult(
             RecipientResolver recipientResolver,
             RecipientAddressResolver addressResolver
     ) {
+        final var rateLimitFailure = sendMessageResult.getRateLimitFailure();
+        final var proofRequiredFailure = sendMessageResult.getProofRequiredFailure();
         return new SendMessageResult(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
-                sendMessageResult.getAddress())),
+                sendMessageResult.getAddress())).toApiRecipientAddress(),
                 sendMessageResult.isSuccess(),
                 sendMessageResult.isNetworkFailure(),
                 sendMessageResult.isUnregisteredFailure(),
                 sendMessageResult.getIdentityFailure() != null,
-                sendMessageResult.getProofRequiredFailure() == null
-                        ? null
-                        : new ProofRequiredException(sendMessageResult.getProofRequiredFailure()));
+                rateLimitFailure == null ? null : RateLimitException.from(rateLimitFailure),
+                proofRequiredFailure == null ? null : ProofRequiredException.from(proofRequiredFailure),
+                sendMessageResult.isInvalidPreKeyFailure());
     }
 
-    public record IdentityFailure(IdentityKey identityKey) {}
+    public boolean isRateLimitFailure() {
+        return this.rateLimitException != null || this.proofRequiredFailure != null;
+    }
+
+    public Long rateLimitRetryAfterMilliseconds() {
+        if (proofRequiredFailure != null) {
+            return proofRequiredFailure.getRetryAfterMilliseconds();
+        } else if (rateLimitException != null) {
+            return rateLimitException.getRetryAfterMilliseconds();
+        } else {
+            return null;
+        }
+    }
 }

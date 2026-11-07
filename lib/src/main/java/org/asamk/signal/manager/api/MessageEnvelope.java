@@ -1,19 +1,22 @@
 package org.asamk.signal.manager.api;
 
-import org.asamk.signal.manager.groups.GroupId;
 import org.asamk.signal.manager.groups.GroupUtils;
 import org.asamk.signal.manager.helper.RecipientAddressResolver;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
 import org.asamk.signal.manager.storage.recipients.RecipientResolver;
+import org.asamk.signal.manager.util.MimeUtils;
 import org.signal.libsignal.metadata.ProtocolException;
 import org.whispersystems.signalservice.api.messages.SignalServiceAttachment;
-import org.whispersystems.signalservice.api.messages.SignalServiceAttachmentRemoteId;
+import org.whispersystems.signalservice.api.messages.SignalServiceAttachmentPointer;
 import org.whispersystems.signalservice.api.messages.SignalServiceContent;
 import org.whispersystems.signalservice.api.messages.SignalServiceDataMessage;
+import org.whispersystems.signalservice.api.messages.SignalServiceEditMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceEnvelope;
 import org.whispersystems.signalservice.api.messages.SignalServiceGroup;
 import org.whispersystems.signalservice.api.messages.SignalServiceGroupContext;
+import org.whispersystems.signalservice.api.messages.SignalServicePreview;
 import org.whispersystems.signalservice.api.messages.SignalServiceReceiptMessage;
+import org.whispersystems.signalservice.api.messages.SignalServiceStoryMessage;
+import org.whispersystems.signalservice.api.messages.SignalServiceTextAttachment;
 import org.whispersystems.signalservice.api.messages.SignalServiceTypingMessage;
 import org.whispersystems.signalservice.api.messages.calls.AnswerMessage;
 import org.whispersystems.signalservice.api.messages.calls.BusyMessage;
@@ -32,7 +35,9 @@ import org.whispersystems.signalservice.api.messages.multidevice.ViewOnceOpenMes
 import org.whispersystems.signalservice.api.messages.multidevice.ViewedMessage;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -47,8 +52,10 @@ public record MessageEnvelope(
         Optional<Receipt> receipt,
         Optional<Typing> typing,
         Optional<Data> data,
+        Optional<Edit> edit,
         Optional<Sync> sync,
-        Optional<Call> call
+        Optional<Call> call,
+        Optional<Story> story
 ) {
 
     public record Receipt(long when, Type type, List<Long> timestamps) {
@@ -81,7 +88,7 @@ public record MessageEnvelope(
         public static Typing from(final SignalServiceTypingMessage typingMessage) {
             return new Typing(typingMessage.getTimestamp(),
                     typingMessage.isTypingStarted() ? Type.STARTED : Type.STOPPED,
-                    Optional.ofNullable(typingMessage.getGroupId().transform(GroupId::unknownVersion).orNull()));
+                    typingMessage.getGroupId().map(GroupId::unknownVersion));
         }
 
         public enum Type {
@@ -93,12 +100,14 @@ public record MessageEnvelope(
     public record Data(
             long timestamp,
             Optional<GroupContext> groupContext,
+            Optional<StoryContext> storyContext,
             Optional<GroupCallUpdate> groupCallUpdate,
             Optional<String> body,
             int expiresInSeconds,
             boolean isExpirationUpdate,
             boolean isViewOnce,
             boolean isEndSession,
+            boolean isProfileKeyUpdate,
             boolean hasProfileKey,
             Optional<Reaction> reaction,
             Optional<Quote> quote,
@@ -107,54 +116,79 @@ public record MessageEnvelope(
             Optional<Long> remoteDeleteId,
             Optional<Sticker> sticker,
             List<SharedContact> sharedContacts,
+            Optional<PollCreate> pollCreate,
+            Optional<PollVote> pollVote,
+            Optional<PollTerminate> pollTerminate,
             List<Mention> mentions,
-            List<Preview> previews
+            List<Preview> previews,
+            List<TextStyle> textStyles,
+            Optional<PinMessage> pinMessage,
+            Optional<UnpinMessage> unpinMessage,
+            Optional<AdminDelete> adminDelete
     ) {
 
         static Data from(
                 final SignalServiceDataMessage dataMessage,
+                Map<String, String> longTexts,
                 RecipientResolver recipientResolver,
                 RecipientAddressResolver addressResolver,
                 final AttachmentFileProvider fileProvider
         ) {
+            var body = dataMessage.getBody();
+            if (dataMessage.getAttachments().isPresent()) {
+                for (final var attachment : dataMessage.getAttachments().get()) {
+                    if (MimeUtils.LONG_TEXT.equals(attachment.getContentType()) && attachment.isPointer()) {
+                        final var longBody = longTexts.get(attachment.asPointer().getRemoteId().toString());
+                        if (longBody != null) {
+                            body = Optional.of(longBody);
+                        }
+                    }
+                }
+            }
             return new Data(dataMessage.getTimestamp(),
-                    Optional.ofNullable(dataMessage.getGroupContext().transform(GroupContext::from).orNull()),
-                    Optional.ofNullable(dataMessage.getGroupCallUpdate().transform(GroupCallUpdate::from).orNull()),
-                    Optional.ofNullable(dataMessage.getBody().orNull()),
+                    dataMessage.getGroupContext().map(GroupContext::from),
+                    dataMessage.getStoryContext()
+                            .map((SignalServiceDataMessage.StoryContext storyContext) -> StoryContext.from(storyContext,
+                                    recipientResolver,
+                                    addressResolver)),
+                    dataMessage.getGroupCallUpdate().map(GroupCallUpdate::from),
+                    body,
                     dataMessage.getExpiresInSeconds(),
                     dataMessage.isExpirationUpdate(),
                     dataMessage.isViewOnce(),
-                    dataMessage.isEndSession(),
+                    false,
+                    dataMessage.isProfileKeyUpdate(),
                     dataMessage.getProfileKey().isPresent(),
-                    Optional.ofNullable(dataMessage.getReaction()
-                            .transform(r -> Reaction.from(r, recipientResolver, addressResolver))
-                            .orNull()),
-                    Optional.ofNullable(dataMessage.getQuote()
-                            .transform(q -> Quote.from(q, recipientResolver, addressResolver, fileProvider))
-                            .orNull()),
-                    Optional.ofNullable(dataMessage.getPayment()
-                            .transform(p -> p.getPaymentNotification().isPresent() ? Payment.from(p) : null)
-                            .orNull()),
+                    dataMessage.getReaction().map(r -> Reaction.from(r, recipientResolver, addressResolver)),
+                    dataMessage.getQuote()
+                            .filter(q -> q.getAuthor() != null && q.getAuthor().isValid())
+                            .map(q -> Quote.from(q, recipientResolver, addressResolver, fileProvider)),
+                    dataMessage.getPayment().map(p -> p.getPaymentNotification().isPresent() ? Payment.from(p) : null),
                     dataMessage.getAttachments()
-                            .transform(a -> a.stream().map(as -> Attachment.from(as, fileProvider)).toList())
-                            .or(List.of()),
-                    Optional.ofNullable(dataMessage.getRemoteDelete()
-                            .transform(SignalServiceDataMessage.RemoteDelete::getTargetSentTimestamp)
-                            .orNull()),
-                    Optional.ofNullable(dataMessage.getSticker().transform(Sticker::from).orNull()),
+                            .map(a -> a.stream().map(as -> Attachment.from(as, fileProvider)).toList())
+                            .orElse(List.of()),
+                    dataMessage.getRemoteDelete().map(SignalServiceDataMessage.RemoteDelete::getTargetSentTimestamp),
+                    dataMessage.getSticker().map(Sticker::from),
                     dataMessage.getSharedContacts()
-                            .transform(a -> a.stream()
+                            .map(a -> a.stream()
                                     .map(sharedContact -> SharedContact.from(sharedContact, fileProvider))
                                     .toList())
-                            .or(List.of()),
+                            .orElse(List.of()),
+                    dataMessage.getPollCreate().map(PollCreate::from),
+                    dataMessage.getPollVote().map(p -> PollVote.from(p, recipientResolver, addressResolver)),
+                    dataMessage.getPollTerminate().map(PollTerminate::from),
                     dataMessage.getMentions()
-                            .transform(a -> a.stream()
-                                    .map(m -> Mention.from(m, recipientResolver, addressResolver))
-                                    .toList())
-                            .or(List.of()),
+                            .map(a -> a.stream().map(m -> Mention.from(m, recipientResolver, addressResolver)).toList())
+                            .orElse(List.of()),
                     dataMessage.getPreviews()
-                            .transform(a -> a.stream().map(preview -> Preview.from(preview, fileProvider)).toList())
-                            .or(List.of()));
+                            .map(a -> a.stream().map(preview -> Preview.from(preview, fileProvider)).toList())
+                            .orElse(List.of()),
+                    dataMessage.getBodyRanges()
+                            .map(a -> a.stream().filter(r -> r.style != null).map(TextStyle::from).toList())
+                            .orElse(List.of()),
+                    dataMessage.getPinnedMessage().map(p -> PinMessage.from(p, recipientResolver, addressResolver)),
+                    dataMessage.getUnpinnedMessage().map(p -> UnpinMessage.from(p, recipientResolver, addressResolver)),
+                    dataMessage.getAdminDelete().map(p -> AdminDelete.from(p, recipientResolver, addressResolver)));
         }
 
         public record GroupContext(GroupId groupId, boolean isGroupUpdate, int revision) {
@@ -175,6 +209,18 @@ public record MessageEnvelope(
             }
         }
 
+        public record StoryContext(RecipientAddress author, long sentTimestamp) {
+
+            static StoryContext from(
+                    SignalServiceDataMessage.StoryContext storyContext,
+                    RecipientResolver recipientResolver,
+                    RecipientAddressResolver addressResolver
+            ) {
+                return new StoryContext(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
+                        storyContext.getAuthorServiceId())).toApiRecipientAddress(), storyContext.getSentTimestamp());
+            }
+        }
+
         public record GroupCallUpdate(String eraId) {
 
             static GroupCallUpdate from(SignalServiceDataMessage.GroupCallUpdate groupCallUpdate) {
@@ -192,7 +238,8 @@ public record MessageEnvelope(
                     RecipientAddressResolver addressResolver
             ) {
                 return new Reaction(reaction.getTargetSentTimestamp(),
-                        addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(reaction.getTargetAuthor())),
+                        addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(reaction.getTargetAuthor()))
+                                .toApiRecipientAddress(),
                         reaction.getEmoji(),
                         reaction.isRemove());
             }
@@ -203,7 +250,8 @@ public record MessageEnvelope(
                 RecipientAddress author,
                 Optional<String> text,
                 List<Mention> mentions,
-                List<Attachment> attachments
+                List<Attachment> attachments,
+                List<TextStyle> textStyles
         ) {
 
             static Quote from(
@@ -213,8 +261,9 @@ public record MessageEnvelope(
                     final AttachmentFileProvider fileProvider
             ) {
                 return new Quote(quote.getId(),
-                        addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(quote.getAuthor())),
-                        Optional.ofNullable(quote.getText()),
+                        addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(quote.getAuthor()))
+                                .toApiRecipientAddress(),
+                        Optional.of(quote.getText()),
                         quote.getMentions() == null
                                 ? List.of()
                                 : quote.getMentions()
@@ -223,7 +272,14 @@ public record MessageEnvelope(
                                         .toList(),
                         quote.getAttachments() == null
                                 ? List.of()
-                                : quote.getAttachments().stream().map(a -> Attachment.from(a, fileProvider)).toList());
+                                : quote.getAttachments().stream().map(a -> Attachment.from(a, fileProvider)).toList(),
+                        quote.getBodyRanges() == null
+                                ? List.of()
+                                : quote.getBodyRanges()
+                                        .stream()
+                                        .filter(r -> r.style != null)
+                                        .map(TextStyle::from)
+                                        .toList());
             }
         }
 
@@ -242,9 +298,8 @@ public record MessageEnvelope(
                     RecipientResolver recipientResolver,
                     RecipientAddressResolver addressResolver
             ) {
-                return new Mention(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(mention.getAci())),
-                        mention.getStart(),
-                        mention.getLength());
+                return new Mention(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(mention.getServiceId()))
+                        .toApiRecipientAddress(), mention.getStart(), mention.getLength());
             }
         }
 
@@ -265,44 +320,51 @@ public record MessageEnvelope(
                 boolean isBorderless
         ) {
 
-            static Attachment from(SignalServiceAttachment attachment, AttachmentFileProvider fileProvider) {
-                if (attachment.isPointer()) {
-                    final var a = attachment.asPointer();
-                    return new Attachment(Optional.of(a.getRemoteId().toString()),
-                            Optional.of(fileProvider.getFile(a.getRemoteId())),
-                            Optional.ofNullable(a.getFileName().orNull()),
+            static Attachment from(SignalServiceAttachment signalAttachment, AttachmentFileProvider fileProvider) {
+                if (signalAttachment.isPointer()) {
+                    final var a = signalAttachment.asPointer();
+                    final var attachmentFile = fileProvider.getFile(a);
+                    return new Attachment(Optional.of(attachmentFile.getName()),
+                            Optional.of(attachmentFile),
+                            a.getFileName(),
                             a.getContentType(),
                             a.getUploadTimestamp() == 0 ? Optional.empty() : Optional.of(a.getUploadTimestamp()),
-                            Optional.ofNullable(a.getSize().transform(Integer::longValue).orNull()),
-                            Optional.ofNullable(a.getPreview().orNull()),
+                            a.getSize().map(Integer::longValue),
+                            a.getPreview(),
                             Optional.empty(),
-                            Optional.ofNullable(a.getCaption().orNull()),
+                            a.getCaption().map(c -> c.isEmpty() ? null : c),
                             a.getWidth() == 0 ? Optional.empty() : Optional.of(a.getWidth()),
                             a.getHeight() == 0 ? Optional.empty() : Optional.of(a.getHeight()),
                             a.getVoiceNote(),
                             a.isGif(),
                             a.isBorderless());
                 } else {
-                    final var a = attachment.asStream();
-                    return new Attachment(Optional.empty(),
-                            Optional.empty(),
-                            Optional.ofNullable(a.getFileName().orNull()),
-                            a.getContentType(),
-                            a.getUploadTimestamp() == 0 ? Optional.empty() : Optional.of(a.getUploadTimestamp()),
-                            Optional.of(a.getLength()),
-                            Optional.ofNullable(a.getPreview().orNull()),
-                            Optional.empty(),
-                            Optional.ofNullable(a.getCaption().orNull()),
-                            a.getWidth() == 0 ? Optional.empty() : Optional.of(a.getWidth()),
-                            a.getHeight() == 0 ? Optional.empty() : Optional.of(a.getHeight()),
-                            a.getVoiceNote(),
-                            a.isGif(),
-                            a.isBorderless());
+                    Attachment attachment = null;
+                    try (final var a = signalAttachment.asStream()) {
+                        attachment = new Attachment(Optional.empty(),
+                                Optional.empty(),
+                                a.getFileName(),
+                                a.getContentType(),
+                                a.getUploadTimestamp() == 0 ? Optional.empty() : Optional.of(a.getUploadTimestamp()),
+                                Optional.of(a.getLength()),
+                                a.getPreview(),
+                                Optional.empty(),
+                                a.getCaption(),
+                                a.getWidth() == 0 ? Optional.empty() : Optional.of(a.getWidth()),
+                                a.getHeight() == 0 ? Optional.empty() : Optional.of(a.getHeight()),
+                                a.getVoiceNote(),
+                                a.isGif(),
+                                a.isBorderless());
+                        return attachment;
+                    } catch (IOException e) {
+                        return attachment;
+                    }
                 }
             }
 
             static Attachment from(
-                    SignalServiceDataMessage.Quote.QuotedAttachment a, final AttachmentFileProvider fileProvider
+                    SignalServiceDataMessage.Quote.QuotedAttachment a,
+                    final AttachmentFileProvider fileProvider
             ) {
                 return new Attachment(Optional.empty(),
                         Optional.empty(),
@@ -346,17 +408,15 @@ public record MessageEnvelope(
                     final AttachmentFileProvider fileProvider
             ) {
                 return new SharedContact(Name.from(sharedContact.getName()),
-                        Optional.ofNullable(sharedContact.getAvatar()
-                                .transform(avatar1 -> Avatar.from(avatar1, fileProvider))
-                                .orNull()),
-                        sharedContact.getPhone().transform(p -> p.stream().map(Phone::from).toList()).or(List.of()),
-                        sharedContact.getEmail().transform(p -> p.stream().map(Email::from).toList()).or(List.of()),
-                        sharedContact.getAddress().transform(p -> p.stream().map(Address::from).toList()).or(List.of()),
-                        Optional.ofNullable(sharedContact.getOrganization().orNull()));
+                        sharedContact.getAvatar().map(avatar1 -> Avatar.from(avatar1, fileProvider)),
+                        sharedContact.getPhone().map(p -> p.stream().map(Phone::from).toList()).orElse(List.of()),
+                        sharedContact.getEmail().map(p -> p.stream().map(Email::from).toList()).orElse(List.of()),
+                        sharedContact.getAddress().map(p -> p.stream().map(Address::from).toList()).orElse(List.of()),
+                        sharedContact.getOrganization());
             }
 
             public record Name(
-                    Optional<String> display,
+                    Optional<String> nickname,
                     Optional<String> given,
                     Optional<String> family,
                     Optional<String> prefix,
@@ -365,12 +425,12 @@ public record MessageEnvelope(
             ) {
 
                 static Name from(org.whispersystems.signalservice.api.messages.shared.SharedContact.Name name) {
-                    return new Name(Optional.ofNullable(name.getDisplay().orNull()),
-                            Optional.ofNullable(name.getGiven().orNull()),
-                            Optional.ofNullable(name.getFamily().orNull()),
-                            Optional.ofNullable(name.getPrefix().orNull()),
-                            Optional.ofNullable(name.getSuffix().orNull()),
-                            Optional.ofNullable(name.getMiddle().orNull()));
+                    return new Name(name.getNickname(),
+                            name.getGiven(),
+                            name.getFamily(),
+                            name.getPrefix(),
+                            name.getSuffix(),
+                            name.getMiddle());
                 }
             }
 
@@ -389,9 +449,7 @@ public record MessageEnvelope(
             ) {
 
                 static Phone from(org.whispersystems.signalservice.api.messages.shared.SharedContact.Phone phone) {
-                    return new Phone(phone.getValue(),
-                            Type.from(phone.getType()),
-                            Optional.ofNullable(phone.getLabel().orNull()));
+                    return new Phone(phone.getValue(), Type.from(phone.getType()), phone.getLabel());
                 }
 
                 public enum Type {
@@ -416,9 +474,7 @@ public record MessageEnvelope(
             ) {
 
                 static Email from(org.whispersystems.signalservice.api.messages.shared.SharedContact.Email email) {
-                    return new Email(email.getValue(),
-                            Type.from(email.getType()),
-                            Optional.ofNullable(email.getLabel().orNull()));
+                    return new Email(email.getValue(), Type.from(email.getType()), email.getLabel());
                 }
 
                 public enum Type {
@@ -451,15 +507,15 @@ public record MessageEnvelope(
             ) {
 
                 static Address from(org.whispersystems.signalservice.api.messages.shared.SharedContact.PostalAddress address) {
-                    return new Address(Address.Type.from(address.getType()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()),
-                            Optional.ofNullable(address.getLabel().orNull()));
+                    return new Address(Type.from(address.getType()),
+                            address.getLabel(),
+                            address.getStreet(),
+                            address.getPobox(),
+                            address.getNeighborhood(),
+                            address.getCity(),
+                            address.getRegion(),
+                            address.getPostcode(),
+                            address.getCountry());
                 }
 
                 public enum Type {
@@ -478,19 +534,117 @@ public record MessageEnvelope(
             }
         }
 
+        public record PollCreate(
+                String question, boolean allowMultiple, List<String> options
+        ) {
+
+            static PollCreate from(
+                    SignalServiceDataMessage.PollCreate pollCreate
+            ) {
+                return new PollCreate(pollCreate.getQuestion(), pollCreate.getAllowMultiple(), pollCreate.getOptions());
+            }
+
+        }
+
+        public record PollVote(
+                RecipientAddress targetAuthor, long targetSentTimestamp, List<Integer> optionIndexes, int voteCount
+        ) {
+
+            static PollVote from(
+                    SignalServiceDataMessage.PollVote pollVote,
+                    RecipientResolver recipientResolver,
+                    RecipientAddressResolver addressResolver
+            ) {
+                return new PollVote(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(pollVote.getTargetAuthor()))
+                        .toApiRecipientAddress(),
+                        pollVote.getTargetSentTimestamp(),
+                        pollVote.getOptionIndexes(),
+                        pollVote.getVoteCount());
+            }
+
+        }
+
+        public record PollTerminate(long targetSentTimestamp) {
+
+            static PollTerminate from(SignalServiceDataMessage.PollTerminate pollTerminate) {
+                return new PollTerminate(pollTerminate.getTargetSentTimestamp());
+            }
+
+        }
+
         public record Preview(String title, String description, long date, String url, Optional<Attachment> image) {
 
-            static Preview from(
-                    SignalServiceDataMessage.Preview preview, final AttachmentFileProvider fileProvider
-            ) {
+            static Preview from(SignalServicePreview preview, final AttachmentFileProvider fileProvider) {
                 return new Preview(preview.getTitle(),
                         preview.getDescription(),
                         preview.getDate(),
                         preview.getUrl(),
-                        Optional.ofNullable(preview.getImage()
-                                .transform(as -> Attachment.from(as, fileProvider))
-                                .orNull()));
+                        preview.getImage().map(as -> Attachment.from(as, fileProvider)));
             }
+        }
+
+        public record PinMessage(
+                RecipientAddress targetAuthor, long targetSentTimestamp, long pinDurationSeconds
+        ) {
+
+            static PinMessage from(
+                    SignalServiceDataMessage.PinnedMessage pinnedMessage,
+                    RecipientResolver recipientResolver,
+                    RecipientAddressResolver addressResolver
+            ) {
+                return new PinMessage(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
+                        pinnedMessage.getTargetAuthor())).toApiRecipientAddress(),
+                        pinnedMessage.getTargetSentTimestamp(),
+                        Boolean.TRUE.equals(pinnedMessage.getForever())
+                                ? -1
+                                : pinnedMessage.getPinDurationInSeconds() == null
+                                        ? 0
+                                        : pinnedMessage.getPinDurationInSeconds());
+            }
+        }
+
+        public record UnpinMessage(RecipientAddress targetAuthor, long targetSentTimestamp) {
+
+            static UnpinMessage from(
+                    SignalServiceDataMessage.UnpinnedMessage unpinnedMessage,
+                    RecipientResolver recipientResolver,
+                    RecipientAddressResolver addressResolver
+            ) {
+                return new UnpinMessage(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
+                        unpinnedMessage.getTargetAuthor())).toApiRecipientAddress(),
+                        unpinnedMessage.getTargetSentTimestamp());
+            }
+        }
+
+        public record AdminDelete(RecipientAddress targetAuthor, long targetSentTimestamp) {
+
+            static AdminDelete from(
+                    SignalServiceDataMessage.AdminDelete adminDelete,
+                    RecipientResolver recipientResolver,
+                    RecipientAddressResolver addressResolver
+            ) {
+                return new AdminDelete(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
+                        adminDelete.getTargetAuthor())).toApiRecipientAddress(), adminDelete.getTargetSentTimestamp());
+            }
+        }
+
+    }
+
+    public record Edit(long targetSentTimestamp, Data dataMessage) {
+
+        public static Edit from(
+                final SignalServiceEditMessage editMessage,
+                Map<String, String> longTexts,
+                RecipientResolver recipientResolver,
+                RecipientAddressResolver addressResolver,
+                final AttachmentFileProvider fileProvider
+        ) {
+            return new Edit(editMessage.getTargetSentTimestamp(),
+                    Data.from(editMessage.getDataMessage(),
+                            longTexts,
+                            recipientResolver,
+                            addressResolver,
+                            fileProvider));
         }
     }
 
@@ -507,34 +661,27 @@ public record MessageEnvelope(
 
         public static Sync from(
                 final SignalServiceSyncMessage syncMessage,
+                Map<String, String> longTexts,
                 RecipientResolver recipientResolver,
                 RecipientAddressResolver addressResolver,
                 final AttachmentFileProvider fileProvider
         ) {
-            return new Sync(Optional.ofNullable(syncMessage.getSent()
-                    .transform(s -> Sent.from(s, recipientResolver, addressResolver, fileProvider))
-                    .orNull()),
-                    Optional.ofNullable(syncMessage.getBlockedList()
-                            .transform(b -> Blocked.from(b, recipientResolver, addressResolver))
-                            .orNull()),
+            return new Sync(syncMessage.getSent()
+                    .map(s -> Sent.from(s, longTexts, recipientResolver, addressResolver, fileProvider)),
+                    syncMessage.getBlockedList().map(b -> Blocked.from(b, recipientResolver, addressResolver)),
                     syncMessage.getRead()
-                            .transform(r -> r.stream()
-                                    .map(rm -> Read.from(rm, recipientResolver, addressResolver))
-                                    .toList())
-                            .or(List.of()),
+                            .map(r -> r.stream().map(rm -> Read.from(rm, recipientResolver, addressResolver)).toList())
+                            .orElse(List.of()),
                     syncMessage.getViewed()
-                            .transform(r -> r.stream()
+                            .map(r -> r.stream()
                                     .map(rm -> Viewed.from(rm, recipientResolver, addressResolver))
                                     .toList())
-                            .or(List.of()),
-                    Optional.ofNullable(syncMessage.getViewOnceOpen()
-                            .transform(rm -> ViewOnceOpen.from(rm, recipientResolver, addressResolver))
-                            .orNull()),
-                    Optional.ofNullable(syncMessage.getContacts().transform(Contacts::from).orNull()),
-                    Optional.ofNullable(syncMessage.getGroups().transform(Groups::from).orNull()),
-                    Optional.ofNullable(syncMessage.getMessageRequestResponse()
-                            .transform(m -> MessageRequestResponse.from(m, recipientResolver, addressResolver))
-                            .orNull()));
+                            .orElse(List.of()),
+                    syncMessage.getViewOnceOpen().map(rm -> ViewOnceOpen.from(rm, recipientResolver, addressResolver)),
+                    syncMessage.getContacts().map(Contacts::from),
+                    syncMessage.getGroups().map(Groups::from),
+                    syncMessage.getMessageRequestResponse()
+                            .map(m -> MessageRequestResponse.from(m, recipientResolver, addressResolver)));
         }
 
         public record Sent(
@@ -542,26 +689,41 @@ public record MessageEnvelope(
                 long expirationStartTimestamp,
                 Optional<RecipientAddress> destination,
                 Set<RecipientAddress> recipients,
-                Data message
+                Optional<Data> message,
+                Optional<Edit> editMessage,
+                Optional<Story> story
         ) {
 
             static Sent from(
                     SentTranscriptMessage sentMessage,
+                    Map<String, String> longTexts,
                     RecipientResolver recipientResolver,
                     RecipientAddressResolver addressResolver,
                     final AttachmentFileProvider fileProvider
             ) {
                 return new Sent(sentMessage.getTimestamp(),
                         sentMessage.getExpirationStartTimestamp(),
-                        Optional.ofNullable(sentMessage.getDestination()
-                                .transform(d -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
-                                        d)))
-                                .orNull()),
+                        sentMessage.getDestination()
+                                .map(d -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(d))
+                                        .toApiRecipientAddress()),
                         sentMessage.getRecipients()
                                 .stream()
-                                .map(d -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(d)))
+                                .map(d -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(d))
+                                        .toApiRecipientAddress())
                                 .collect(Collectors.toSet()),
-                        Data.from(sentMessage.getMessage(), recipientResolver, addressResolver, fileProvider));
+                        sentMessage.getDataMessage()
+                                .map(message -> Data.from(message,
+                                        longTexts,
+                                        recipientResolver,
+                                        addressResolver,
+                                        fileProvider)),
+                        sentMessage.getEditMessage()
+                                .map(message -> Edit.from(message,
+                                        longTexts,
+                                        recipientResolver,
+                                        addressResolver,
+                                        fileProvider)),
+                        sentMessage.getStoryMessage().map(s -> Story.from(s, fileProvider)));
             }
         }
 
@@ -572,10 +734,15 @@ public record MessageEnvelope(
                     RecipientResolver recipientResolver,
                     RecipientAddressResolver addressResolver
             ) {
-                return new Blocked(blockedListMessage.getAddresses()
-                        .stream()
-                        .map(d -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(d)))
-                        .toList(), blockedListMessage.getGroupIds().stream().map(GroupId::unknownVersion).toList());
+                return new Blocked(blockedListMessage.individuals.stream()
+                        .map(d -> new RecipientAddress(d.getAci() == null ? null : d.getAci().toString(),
+                                null,
+                                d.getE164(),
+                                null))
+                        .toList(),
+                        blockedListMessage.groups.stream()
+                                .map(group -> GroupId.unknownVersion(group.getGroupId()))
+                                .toList());
             }
         }
 
@@ -586,8 +753,8 @@ public record MessageEnvelope(
                     RecipientResolver recipientResolver,
                     RecipientAddressResolver addressResolver
             ) {
-                return new Read(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(readMessage.getSender())),
-                        readMessage.getTimestamp());
+                return new Read(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(readMessage.getSenderAci()))
+                        .toApiRecipientAddress(), readMessage.getTimestamp());
             }
         }
 
@@ -598,8 +765,8 @@ public record MessageEnvelope(
                     RecipientResolver recipientResolver,
                     RecipientAddressResolver addressResolver
             ) {
-                return new Viewed(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(readMessage.getSender())),
-                        readMessage.getTimestamp());
+                return new Viewed(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(readMessage.getSender()))
+                        .toApiRecipientAddress(), readMessage.getTimestamp());
             }
         }
 
@@ -611,7 +778,7 @@ public record MessageEnvelope(
                     RecipientAddressResolver addressResolver
             ) {
                 return new ViewOnceOpen(addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
-                        readMessage.getSender())), readMessage.getTimestamp());
+                        readMessage.getSender())).toApiRecipientAddress(), readMessage.getTimestamp());
             }
         }
 
@@ -637,13 +804,10 @@ public record MessageEnvelope(
                     RecipientAddressResolver addressResolver
             ) {
                 return new MessageRequestResponse(Type.from(messageRequestResponse.getType()),
-                        Optional.ofNullable(messageRequestResponse.getGroupId()
-                                .transform(GroupId::unknownVersion)
-                                .orNull()),
-                        Optional.ofNullable(messageRequestResponse.getPerson()
-                                .transform(p -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(
-                                        p)))
-                                .orNull()));
+                        messageRequestResponse.getGroupId().map(GroupId::unknownVersion),
+                        messageRequestResponse.getPerson()
+                                .map(p -> addressResolver.resolveRecipientAddress(recipientResolver.resolveRecipient(p))
+                                        .toApiRecipientAddress()));
             }
 
             public enum Type {
@@ -652,7 +816,9 @@ public record MessageEnvelope(
                 DELETE,
                 BLOCK,
                 BLOCK_AND_DELETE,
-                UNBLOCK_AND_ACCEPT;
+                UNBLOCK_AND_ACCEPT,
+                SPAM,
+                BLOCK_AND_SPAM;
 
                 static Type from(MessageRequestResponseMessage.Type type) {
                     return switch (type) {
@@ -662,6 +828,8 @@ public record MessageEnvelope(
                         case BLOCK -> BLOCK;
                         case BLOCK_AND_DELETE -> BLOCK_AND_DELETE;
                         case UNBLOCK_AND_ACCEPT -> UNBLOCK_AND_ACCEPT;
+                        case SPAM -> SPAM;
+                        case BLOCK_AND_SPAM -> BLOCK_AND_SPAM;
                     };
                 }
             }
@@ -677,30 +845,29 @@ public record MessageEnvelope(
             Optional<Hangup> hangup,
             Optional<Busy> busy,
             List<IceUpdate> iceUpdate,
-            Optional<Opaque> opaque
+            Optional<Opaque> opaque,
+            boolean isUrgent
     ) {
 
         public static Call from(final SignalServiceCallMessage callMessage) {
-            return new Call(Optional.ofNullable(callMessage.getDestinationDeviceId().orNull()),
-                    Optional.ofNullable(callMessage.getGroupId().transform(GroupId::unknownVersion).orNull()),
-                    Optional.ofNullable(callMessage.getTimestamp().orNull()),
-                    Optional.ofNullable(callMessage.getOfferMessage().transform(Offer::from).orNull()),
-                    Optional.ofNullable(callMessage.getAnswerMessage().transform(Answer::from).orNull()),
-                    Optional.ofNullable(callMessage.getHangupMessage().transform(Hangup::from).orNull()),
-                    Optional.ofNullable(callMessage.getBusyMessage().transform(Busy::from).orNull()),
+            return new Call(callMessage.getDestinationDeviceId(),
+                    callMessage.getGroupId().map(GroupId::unknownVersion),
+                    callMessage.getTimestamp(),
+                    callMessage.getOfferMessage().map(Offer::from),
+                    callMessage.getAnswerMessage().map(Answer::from),
+                    callMessage.getHangupMessage().map(Hangup::from),
+                    callMessage.getBusyMessage().map(Busy::from),
                     callMessage.getIceUpdateMessages()
-                            .transform(m -> m.stream().map(IceUpdate::from).toList())
-                            .or(List.of()),
-                    Optional.ofNullable(callMessage.getOpaqueMessage().transform(Opaque::from).orNull()));
+                            .map(m -> m.stream().map(IceUpdate::from).toList())
+                            .orElse(List.of()),
+                    callMessage.getOpaqueMessage().map(Opaque::from),
+                    callMessage.isUrgent());
         }
 
-        public record Offer(long id, String sdp, Type type, byte[] opaque) {
+        public record Offer(long id, Type type, byte[] opaque) {
 
             static Offer from(OfferMessage offerMessage) {
-                return new Offer(offerMessage.getId(),
-                        offerMessage.getSdp(),
-                        Type.from(offerMessage.getType()),
-                        offerMessage.getOpaque());
+                return new Offer(offerMessage.getId(), Type.from(offerMessage.getType()), offerMessage.getOpaque());
             }
 
             public enum Type {
@@ -716,10 +883,10 @@ public record MessageEnvelope(
             }
         }
 
-        public record Answer(long id, String sdp, byte[] opaque) {
+        public record Answer(long id, byte[] opaque) {
 
             static Answer from(AnswerMessage answerMessage) {
-                return new Answer(answerMessage.getId(), answerMessage.getSdp(), answerMessage.getOpaque());
+                return new Answer(answerMessage.getId(), answerMessage.getOpaque());
             }
         }
 
@@ -730,13 +897,12 @@ public record MessageEnvelope(
             }
         }
 
-        public record Hangup(long id, Type type, int deviceId, boolean isLegacy) {
+        public record Hangup(long id, Type type, int deviceId) {
 
             static Hangup from(HangupMessage hangupMessage) {
                 return new Hangup(hangupMessage.getId(),
                         Type.from(hangupMessage.getType()),
-                        hangupMessage.getDeviceId(),
-                        hangupMessage.isLegacy());
+                        hangupMessage.getDeviceId());
             }
 
             public enum Type {
@@ -758,10 +924,10 @@ public record MessageEnvelope(
             }
         }
 
-        public record IceUpdate(long id, String sdp, byte[] opaque) {
+        public record IceUpdate(long id, byte[] opaque) {
 
             static IceUpdate from(IceUpdateMessage iceUpdateMessage) {
-                return new IceUpdate(iceUpdateMessage.getId(), iceUpdateMessage.getSdp(), iceUpdateMessage.getOpaque());
+                return new IceUpdate(iceUpdateMessage.getId(), iceUpdateMessage.getOpaque());
             }
         }
 
@@ -785,16 +951,88 @@ public record MessageEnvelope(
         }
     }
 
+    public record Story(
+            boolean allowsReplies,
+            Optional<GroupId> groupId,
+            Optional<Data.Attachment> fileAttachment,
+            Optional<TextAttachment> textAttachment
+    ) {
+
+        public static Story from(SignalServiceStoryMessage storyMessage, final AttachmentFileProvider fileProvider) {
+            return new Story(storyMessage.getAllowsReplies().orElse(false),
+                    storyMessage.getGroupContext().map(c -> GroupUtils.getGroupIdV2(c.getMasterKey())),
+                    storyMessage.getFileAttachment().map(f -> Data.Attachment.from(f, fileProvider)),
+                    storyMessage.getTextAttachment().map(t -> TextAttachment.from(t, fileProvider)));
+        }
+
+        public record TextAttachment(
+                Optional<String> text,
+                Optional<Style> style,
+                Optional<Color> textForegroundColor,
+                Optional<Color> textBackgroundColor,
+                Optional<Data.Preview> preview,
+                Optional<Gradient> backgroundGradient,
+                Optional<Color> backgroundColor
+        ) {
+
+            static TextAttachment from(
+                    SignalServiceTextAttachment textAttachment,
+                    final AttachmentFileProvider fileProvider
+            ) {
+                return new TextAttachment(textAttachment.getText(),
+                        textAttachment.getStyle().map(Style::from),
+                        textAttachment.getTextForegroundColor().map(Color::new),
+                        textAttachment.getTextBackgroundColor().map(Color::new),
+                        textAttachment.getPreview().map(p -> Data.Preview.from(p, fileProvider)),
+                        textAttachment.getBackgroundGradient().map(Gradient::from),
+                        textAttachment.getBackgroundColor().map(Color::new));
+            }
+
+            public enum Style {
+                DEFAULT,
+                REGULAR,
+                BOLD,
+                SERIF,
+                SCRIPT,
+                CONDENSED;
+
+                static Style from(SignalServiceTextAttachment.Style style) {
+                    return switch (style) {
+                        case DEFAULT -> DEFAULT;
+                        case REGULAR -> REGULAR;
+                        case BOLD -> BOLD;
+                        case SERIF -> SERIF;
+                        case SCRIPT -> SCRIPT;
+                        case CONDENSED -> CONDENSED;
+                    };
+                }
+            }
+
+            public record Gradient(
+                    List<Color> colors, List<Float> positions, Optional<Integer> angle
+            ) {
+
+                static Gradient from(SignalServiceTextAttachment.Gradient gradient) {
+                    return new Gradient(gradient.getColors().stream().map(Color::new).toList(),
+                            gradient.getPositions(),
+                            gradient.getAngle());
+                }
+            }
+        }
+    }
+
     public static MessageEnvelope from(
             SignalServiceEnvelope envelope,
             SignalServiceContent content,
+            Map<String, String> longTexts,
             RecipientResolver recipientResolver,
             RecipientAddressResolver addressResolver,
             final AttachmentFileProvider fileProvider,
             Exception exception
     ) {
-        final var source = !envelope.isUnidentifiedSender() && envelope.hasSourceUuid()
-                ? recipientResolver.resolveRecipient(envelope.getSourceAddress())
+        final var serviceId = envelope.getSourceServiceId();
+        final var source = !envelope.isUnidentifiedSender() && serviceId != null
+                ? recipientResolver.resolveRecipient(serviceId)
                 : envelope.isUnidentifiedSender() && content != null
                         ? recipientResolver.resolveRecipient(content.getSender())
                         : exception instanceof ProtocolException e
@@ -809,31 +1047,40 @@ public record MessageEnvelope(
         Optional<Receipt> receipt;
         Optional<Typing> typing;
         Optional<Data> data;
+        Optional<Edit> edit;
         Optional<Sync> sync;
         Optional<Call> call;
+        Optional<Story> story;
         if (content != null) {
-            receipt = Optional.ofNullable(content.getReceiptMessage().transform(Receipt::from).orNull());
-            typing = Optional.ofNullable(content.getTypingMessage().transform(Typing::from).orNull());
-            data = Optional.ofNullable(content.getDataMessage()
-                    .transform(dataMessage -> Data.from(dataMessage, recipientResolver, addressResolver, fileProvider))
-                    .orNull());
-            sync = Optional.ofNullable(content.getSyncMessage()
-                    .transform(s -> Sync.from(s, recipientResolver, addressResolver, fileProvider))
-                    .orNull());
-            call = Optional.ofNullable(content.getCallMessage().transform(Call::from).orNull());
+            receipt = content.getReceiptMessage().map(Receipt::from);
+            typing = content.getTypingMessage().map(Typing::from);
+            data = content.getDataMessage()
+                    .map(dataMessage -> Data.from(dataMessage,
+                            longTexts,
+                            recipientResolver,
+                            addressResolver,
+                            fileProvider));
+            edit = content.getEditMessage()
+                    .map(s -> Edit.from(s, longTexts, recipientResolver, addressResolver, fileProvider));
+            sync = content.getSyncMessage()
+                    .map(s -> Sync.from(s, longTexts, recipientResolver, addressResolver, fileProvider));
+            call = content.getCallMessage().map(Call::from);
+            story = content.getStoryMessage().map(s -> Story.from(s, fileProvider));
         } else {
             receipt = envelope.isReceipt() ? Optional.of(new Receipt(envelope.getServerReceivedTimestamp(),
                     Receipt.Type.DELIVERY,
                     List.of(envelope.getTimestamp()))) : Optional.empty();
             typing = Optional.empty();
             data = Optional.empty();
+            edit = Optional.empty();
             sync = Optional.empty();
             call = Optional.empty();
+            story = Optional.empty();
         }
 
         return new MessageEnvelope(source == null
                 ? Optional.empty()
-                : Optional.of(addressResolver.resolveRecipientAddress(source)),
+                : Optional.of(addressResolver.resolveRecipientAddress(source).toApiRecipientAddress()),
                 sourceDevice,
                 envelope.getTimestamp(),
                 envelope.getServerReceivedTimestamp(),
@@ -842,12 +1089,14 @@ public record MessageEnvelope(
                 receipt,
                 typing,
                 data,
+                edit,
                 sync,
-                call);
+                call,
+                story);
     }
 
     public interface AttachmentFileProvider {
 
-        File getFile(SignalServiceAttachmentRemoteId attachmentRemoteId);
+        File getFile(SignalServiceAttachmentPointer pointer);
     }
 }

@@ -5,9 +5,8 @@ import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.Namespace;
 
-import org.asamk.Signal;
-import org.asamk.SignalControl;
 import org.asamk.signal.commands.Command;
+import org.asamk.signal.commands.CommandHandler;
 import org.asamk.signal.commands.Commands;
 import org.asamk.signal.commands.LocalCommand;
 import org.asamk.signal.commands.MultiLocalCommand;
@@ -17,27 +16,19 @@ import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.commands.exceptions.IOErrorException;
 import org.asamk.signal.commands.exceptions.UnexpectedErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
-import org.asamk.signal.dbus.DbusManagerImpl;
-import org.asamk.signal.dbus.DbusMultiAccountManagerImpl;
-import org.asamk.signal.dbus.DbusProvisioningManagerImpl;
-import org.asamk.signal.dbus.DbusRegistrationManagerImpl;
 import org.asamk.signal.manager.Manager;
-import org.asamk.signal.manager.MultiAccountManagerImpl;
-import org.asamk.signal.manager.NotRegisteredException;
-import org.asamk.signal.manager.ProvisioningManager;
 import org.asamk.signal.manager.RegistrationManager;
-import org.asamk.signal.manager.config.ServiceConfig;
-import org.asamk.signal.manager.config.ServiceEnvironment;
-import org.asamk.signal.manager.storage.identities.TrustNewIdentity;
+import org.asamk.signal.manager.Settings;
+import org.asamk.signal.manager.SignalAccountFiles;
+import org.asamk.signal.manager.api.AccountCheckException;
+import org.asamk.signal.manager.api.NotRegisteredException;
+import org.asamk.signal.manager.api.ServiceEnvironment;
+import org.asamk.signal.manager.api.TlsProxy;
+import org.asamk.signal.manager.api.TrustNewIdentity;
 import org.asamk.signal.output.JsonWriterImpl;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.output.PlainTextWriterImpl;
 import org.asamk.signal.util.IOUtils;
-import org.freedesktop.dbus.connections.impl.DBusConnection;
-import org.freedesktop.dbus.errors.ServiceUnknown;
-import org.freedesktop.dbus.errors.UnknownMethod;
-import org.freedesktop.dbus.exceptions.DBusException;
-import org.freedesktop.dbus.exceptions.DBusExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,19 +36,20 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.nio.charset.Charset;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Set;
 
 import static net.sourceforge.argparse4j.DefaultSettings.VERSION_0_9_0_DEFAULT_SETTINGS;
+import static org.asamk.signal.dbus.DbusCommandHandler.initDbusClient;
 
 public class App {
 
-    private final static Logger logger = LoggerFactory.getLogger(App.class);
+    private static final Logger logger = LoggerFactory.getLogger(App.class);
 
     private final Namespace ns;
 
-    static ArgumentParser buildArgumentParser() {
+    static ArgumentParser buildArgumentParser(GlobalConfig config) {
+        final var cfg = config == null ? GlobalConfig.DEFAULT : config;
+
         var parser = ArgumentParsers.newFor("signal-cli", VERSION_0_9_0_DEFAULT_SETTINGS)
                 .includeArgumentNamesAsKeysInResult(true)
                 .build()
@@ -65,39 +57,70 @@ public class App {
                 .description("Commandline interface for Signal.")
                 .version(BaseConfig.PROJECT_NAME + " " + BaseConfig.PROJECT_VERSION);
 
-        parser.addArgument("-v", "--version").help("Show package version.").action(Arguments.version());
-        parser.addArgument("--verbose")
+        parser.addArgument("--version").help("Show package version.").action(Arguments.version());
+        parser.addArgument("-v", "--verbose")
                 .help("Raise log level and include lib signal logs. Specify multiple times for even more logs.")
-                .action(Arguments.count());
+                .action(Arguments.count())
+                .setDefault(cfg.verbose() == null ? 0 : cfg.verbose());
         parser.addArgument("--log-file")
                 .type(File.class)
-                .help("Write log output to the given file. If --verbose is also given, the detailed logs will only be written to the log file.");
-        parser.addArgument("-c", "--config")
-                .help("Set the path, where to store the config (Default: $XDG_DATA_HOME/signal-cli , $HOME/.local/share/signal-cli).");
+                .help("Write log output to the given file. If --verbose is also given, the detailed logs will only be written to the log file.")
+                .setDefault(cfg.logFile() == null ? null : new File(cfg.logFile()));
+        parser.addArgument("--scrub-log")
+                .action(Arguments.storeTrue())
+                .help("Scrub possibly sensitive information from the log, like phone numbers and UUIDs.")
+                .setDefault(cfg.scrubLog() == null ? false : cfg.scrubLog());
+        parser.addArgument("-d", "--data-dir", "-c", "--config")
+                .help("Set the path where to store data (Default: $XDG_DATA_HOME/signal-cli , $HOME/.local/share/signal-cli).")
+                .setDefault(cfg.dataDir());
 
         parser.addArgument("-a", "--account", "-u", "--username")
                 .help("Specify your phone number, that will be your identifier.");
 
         var mut = parser.addMutuallyExclusiveGroup();
-        mut.addArgument("--dbus").dest("global-dbus").help("Make request via user dbus.").action(Arguments.storeTrue());
+        mut.addArgument("--dbus")
+                .dest("global-dbus")
+                .help("Make request via user dbus.")
+                .action(Arguments.storeTrue())
+                .setDefault(cfg.dbus() == null ? false : cfg.dbus());
         mut.addArgument("--dbus-system")
                 .dest("global-dbus-system")
                 .help("Make request via system dbus.")
-                .action(Arguments.storeTrue());
+                .action(Arguments.storeTrue())
+                .setDefault(cfg.dbusSystem() == null ? false : cfg.dbusSystem());
+        parser.addArgument("--bus-name")
+                .dest("global-bus-name")
+                .setDefault(cfg.busName() != null ? cfg.busName() : DbusConfig.getBusname())
+                .help("Specify the D-Bus bus name to connect to.");
 
         parser.addArgument("-o", "--output")
                 .help("Choose to output in plain text or JSON")
-                .type(Arguments.enumStringType(OutputType.class));
+                .type(Arguments.enumStringType(OutputType.class))
+                .setDefault(cfg.output() == null ? null : cfg.output());
 
         parser.addArgument("--service-environment")
                 .help("Choose the server environment to use.")
                 .type(Arguments.enumStringType(ServiceEnvironmentCli.class))
-                .setDefault(ServiceEnvironmentCli.LIVE);
+                .setDefault(cfg.serviceEnvironment() != null ? cfg.serviceEnvironment() : ServiceEnvironmentCli.LIVE);
 
         parser.addArgument("--trust-new-identities")
                 .help("Choose when to trust new identities.")
                 .type(Arguments.enumStringType(TrustNewIdentityCli.class))
-                .setDefault(TrustNewIdentityCli.ON_FIRST_USE);
+                .setDefault(cfg.trustNewIdentities() != null
+                        ? cfg.trustNewIdentities()
+                        : TrustNewIdentityCli.ON_FIRST_USE);
+
+        parser.addArgument("--disable-send-log")
+                .help("Disable message send log (for resending messages that recipient couldn't decrypt)")
+                .action(Arguments.storeTrue())
+                .setDefault(cfg.disableSendLog() != null ? cfg.disableSendLog() : false);
+
+        parser.addArgument("--tls-proxy")
+                .help("Connect to the Signal servers through a Signal TLS proxy (HOST, HOST:PORT or a https://signal.tube/#HOST link).")
+                .setDefault(cfg.tlsProxy());
+
+        parser.epilog(
+                "The global arguments are shown with 'signal-cli -h' and need to come before the subcommand, while the subcommand-specific arguments (shown with 'signal-cli SUBCOMMAND -h') need to be given after the subcommand.");
 
         var subparsers = parser.addSubparsers().title("subcommands").dest("command");
 
@@ -114,45 +137,119 @@ public class App {
     }
 
     public void init() throws CommandException {
+        logger.debug("Starting {}", BaseConfig.PROJECT_NAME + " " + BaseConfig.PROJECT_VERSION);
         var commandKey = ns.getString("command");
         var command = Commands.getCommand(commandKey);
         if (command == null) {
             throw new UserErrorException("Command not implemented!");
         }
 
-        var outputTypeInput = ns.<OutputType>get("output");
-        var outputType = outputTypeInput == null
-                ? command.getSupportedOutputTypes().stream().findFirst().orElse(null)
-                : outputTypeInput;
-        var writer = new BufferedWriter(new OutputStreamWriter(System.out, Charset.defaultCharset()));
-        var outputWriter = outputType == null
+        final var outputWriter = getOutputWriter(command);
+        final var commandHandler = new CommandHandler(ns, outputWriter);
+
+        var account = AccountIdentifier.normalize(ns.getString("account"));
+
+        final var useDbus = Boolean.TRUE.equals(ns.getBoolean("global-dbus"));
+        final var useDbusSystem = Boolean.TRUE.equals(ns.getBoolean("global-dbus-system"));
+        if (useDbus || useDbusSystem) {
+            final var busName = ns.getString("global-bus-name");
+            // If account is null, it will connect to the default object path
+            initDbusClient(command, account, useDbusSystem, busName, commandHandler);
+            return;
+        }
+
+        if (!Manager.isSignalClientAvailable()) {
+            throw new UserErrorException("Missing required native library dependency: libsignal-client");
+        }
+
+        final var signalAccountFiles = loadSignalAccountFiles();
+
+        handleCommand(command, commandHandler, account, signalAccountFiles);
+    }
+
+    private void handleCommand(
+            final Command command,
+            final CommandHandler commandHandler,
+            String account,
+            final SignalAccountFiles signalAccountFiles
+    ) throws CommandException {
+        if (command instanceof ProvisioningCommand provisioningCommand) {
+            if (account != null) {
+                throw new UserErrorException("You cannot specify a account (phone number) when linking");
+            }
+
+            handleProvisioningCommand(provisioningCommand, signalAccountFiles, commandHandler);
+            return;
+        }
+
+        if (account == null) {
+            if (command instanceof MultiLocalCommand multiLocalCommand) {
+                handleMultiLocalCommand(multiLocalCommand, signalAccountFiles, commandHandler);
+                return;
+            }
+
+            account = getAccountIfOnlyOne(signalAccountFiles);
+        }
+
+        if (command instanceof RegistrationCommand registrationCommand) {
+            if (!Manager.isValidNumber(account, null) && !Manager.isValidAci(account)) {
+                throw new UserErrorException("Invalid account (E164 phone number or Account Key).");
+            }
+            handleRegistrationCommand(registrationCommand, account, signalAccountFiles, commandHandler);
+            return;
+        }
+
+        if (command instanceof LocalCommand localCommand) {
+            if (!Manager.isValidNumber(account, null) && !Manager.isValidAci(account)) {
+                throw new UserErrorException("Invalid account (phone number), make sure you include the country code.");
+            }
+            handleLocalCommand(localCommand, account, signalAccountFiles, commandHandler);
+            return;
+        }
+
+        throw new UserErrorException("Command only works in multi-account mode");
+    }
+
+    private static String getAccountIfOnlyOne(final SignalAccountFiles signalAccountFiles) throws IOErrorException, UserErrorException {
+        Set<String> accounts;
+        try {
+            accounts = signalAccountFiles.getAllLocalAccountIdentifiers();
+        } catch (IOException e) {
+            throw new IOErrorException("Failed to load local accounts file", e);
+        }
+        if (accounts.isEmpty()) {
+            throw new UserErrorException("No local users found, you first need to register or link an account");
+        } else if (accounts.size() > 1) {
+            throw new UserErrorException(
+                    "Multiple users found, you need to specify an account (phone number or ACI) with -a");
+        }
+        return accounts.stream().findFirst().get();
+    }
+
+    private OutputWriter getOutputWriter(final Command command) throws UserErrorException {
+        final var outputTypeInput = ns.<OutputType>get("output");
+        final var outputType = outputTypeInput == null ? command.getSupportedOutputTypes()
+                .stream()
+                .findFirst()
+                .orElse(null) : outputTypeInput;
+        final var writer = new BufferedWriter(new OutputStreamWriter(System.out, IOUtils.getConsoleCharset()));
+        final var outputWriter = outputType == null
                 ? null
                 : outputType == OutputType.JSON ? new JsonWriterImpl(writer) : new PlainTextWriterImpl(writer);
 
         if (outputWriter != null && !command.getSupportedOutputTypes().contains(outputType)) {
             throw new UserErrorException("Command doesn't support output type " + outputType);
         }
+        return outputWriter;
+    }
 
-        var account = ns.getString("account");
-
-        final var useDbus = Boolean.TRUE.equals(ns.getBoolean("global-dbus"));
-        final var useDbusSystem = Boolean.TRUE.equals(ns.getBoolean("global-dbus-system"));
-        if (useDbus || useDbusSystem) {
-            // If account is null, it will connect to the default object path
-            initDbusClient(command, account, useDbusSystem, outputWriter);
-            return;
-        }
-
+    private SignalAccountFiles loadSignalAccountFiles() throws IOErrorException, UserErrorException {
         final File dataPath;
-        var config = ns.getString("config");
-        if (config != null) {
-            dataPath = new File(config);
+        final var dataDir = ns.getString("data-dir");
+        if (dataDir != null) {
+            dataPath = new File(dataDir);
         } else {
             dataPath = getDefaultDataPath();
-        }
-
-        if (!ServiceConfig.isSignalClientAvailable()) {
-            throw new UserErrorException("Missing required native library dependency: libsignal-client");
         }
 
         final var serviceEnvironmentCli = ns.<ServiceEnvironmentCli>get("service-environment");
@@ -165,92 +262,73 @@ public class App {
                 ? TrustNewIdentity.ON_FIRST_USE
                 : trustNewIdentityCli == TrustNewIdentityCli.ALWAYS ? TrustNewIdentity.ALWAYS : TrustNewIdentity.NEVER;
 
-        if (command instanceof ProvisioningCommand provisioningCommand) {
-            if (account != null) {
-                throw new UserErrorException("You cannot specify a account (phone number) when linking");
-            }
+        final var disableSendLog = Boolean.TRUE.equals(ns.getBoolean("disable-send-log"));
 
-            handleProvisioningCommand(provisioningCommand, dataPath, serviceEnvironment, outputWriter);
-            return;
+        final var tlsProxy = ns.getString("tls-proxy");
+
+        try {
+            return new SignalAccountFiles(dataPath,
+                    serviceEnvironment,
+                    BaseConfig.USER_AGENT,
+                    new Settings(trustNewIdentity, disableSendLog, tlsProxy));
+        } catch (TlsProxy.InvalidTlsProxyException e) {
+            throw new UserErrorException(e.getMessage(), e);
+        } catch (IOException e) {
+            throw new IOErrorException("Failed to read local accounts list", e);
         }
-
-        if (account == null) {
-            var accounts = Manager.getAllLocalAccountNumbers(dataPath);
-
-            if (command instanceof MultiLocalCommand multiLocalCommand) {
-                handleMultiLocalCommand(multiLocalCommand,
-                        dataPath,
-                        serviceEnvironment,
-                        accounts,
-                        outputWriter,
-                        trustNewIdentity);
-                return;
-            }
-
-            if (accounts.size() == 0) {
-                throw new UserErrorException("No local users found, you first need to register or link an account");
-            } else if (accounts.size() > 1) {
-                throw new UserErrorException(
-                        "Multiple users found, you need to specify an account (phone number) with -a");
-            }
-
-            account = accounts.get(0);
-        } else if (!Manager.isValidNumber(account, null)) {
-            throw new UserErrorException("Invalid account (phone number), make sure you include the country code.");
-        }
-
-        if (command instanceof RegistrationCommand registrationCommand) {
-            handleRegistrationCommand(registrationCommand, account, dataPath, serviceEnvironment);
-            return;
-        }
-
-        if (!(command instanceof LocalCommand)) {
-            throw new UserErrorException("Command only works in multi-account mode");
-        }
-
-        handleLocalCommand((LocalCommand) command,
-                account,
-                dataPath,
-                serviceEnvironment,
-                outputWriter,
-                trustNewIdentity);
     }
 
     private void handleProvisioningCommand(
             final ProvisioningCommand command,
-            final File dataPath,
-            final ServiceEnvironment serviceEnvironment,
-            final OutputWriter outputWriter
+            final SignalAccountFiles signalAccountFiles,
+            final CommandHandler commandHandler
     ) throws CommandException {
-        var pm = ProvisioningManager.init(dataPath, serviceEnvironment, BaseConfig.USER_AGENT);
-        command.handleCommand(ns, pm, outputWriter);
-    }
-
-    private void handleProvisioningCommand(
-            final ProvisioningCommand c, final DBusConnection dBusConn, final OutputWriter outputWriter
-    ) throws CommandException, DBusException {
-        final var signalControl = dBusConn.getRemoteObject(DbusConfig.getBusname(),
-                DbusConfig.getObjectPath(),
-                SignalControl.class);
-        final var provisioningManager = new DbusProvisioningManagerImpl(signalControl, dBusConn);
-        try {
-            c.handleCommand(ns, provisioningManager, outputWriter);
-        } catch (UnsupportedOperationException e) {
-            throw new UserErrorException("Command is not yet implemented via dbus", e);
-        } catch (DBusExecutionException e) {
-            throw new UnexpectedErrorException(e.getMessage(), e);
-        }
+        var pm = signalAccountFiles.initProvisioningManager();
+        commandHandler.handleProvisioningCommand(command, pm);
     }
 
     private void handleRegistrationCommand(
             final RegistrationCommand command,
             final String account,
-            final File dataPath,
-            final ServiceEnvironment serviceEnvironment
+            final SignalAccountFiles signalAccountFiles,
+            final CommandHandler commandHandler
     ) throws CommandException {
-        final RegistrationManager manager;
+        try (final var rm = loadRegistrationManager(account, signalAccountFiles)) {
+            commandHandler.handleRegistrationCommand(command, rm);
+        } catch (IOException e) {
+            logger.warn("Cleanup failed", e);
+        }
+    }
+
+    private void handleLocalCommand(
+            final LocalCommand command,
+            final String account,
+            final SignalAccountFiles signalAccountFiles,
+            final CommandHandler commandHandler
+    ) throws CommandException {
+        try (var m = loadManager(account, signalAccountFiles)) {
+            commandHandler.handleLocalCommand(command, m);
+        }
+    }
+
+    private void handleMultiLocalCommand(
+            final MultiLocalCommand command,
+            final SignalAccountFiles signalAccountFiles,
+            final CommandHandler commandHandler
+    ) throws CommandException {
+        try (var multiAccountManager = signalAccountFiles.initMultiAccountManager()) {
+            commandHandler.handleMultiLocalCommand(command, multiAccountManager);
+        } catch (IOException e) {
+            throw new IOErrorException("Failed to load local accounts file", e);
+        }
+    }
+
+    private RegistrationManager loadRegistrationManager(
+            final String account,
+            final SignalAccountFiles signalAccountFiles
+    ) throws UnexpectedErrorException {
         try {
-            manager = RegistrationManager.init(account, dataPath, serviceEnvironment, BaseConfig.USER_AGENT);
+            return signalAccountFiles.initRegistrationManager(account);
         } catch (Throwable e) {
             throw new UnexpectedErrorException("Error loading or creating state file: "
                     + e.getMessage()
@@ -258,109 +336,28 @@ public class App {
                     + e.getClass().getSimpleName()
                     + ")", e);
         }
-        try (manager) {
-            command.handleCommand(ns, manager);
-        } catch (IOException e) {
-            logger.warn("Cleanup failed", e);
-        }
-    }
-
-    private void handleRegistrationCommand(
-            final RegistrationCommand c, String account, final DBusConnection dBusConn, final OutputWriter outputWriter
-    ) throws CommandException, DBusException {
-        final var signalControl = dBusConn.getRemoteObject(DbusConfig.getBusname(),
-                DbusConfig.getObjectPath(),
-                SignalControl.class);
-        try (final var registrationManager = new DbusRegistrationManagerImpl(account, signalControl, dBusConn)) {
-            c.handleCommand(ns, registrationManager);
-        } catch (UnsupportedOperationException e) {
-            throw new UserErrorException("Command is not yet implemented via dbus", e);
-        } catch (DBusExecutionException e) {
-            throw new UnexpectedErrorException(e.getMessage(), e);
-        }
-    }
-
-    private void handleLocalCommand(
-            final LocalCommand command,
-            final String account,
-            final File dataPath,
-            final ServiceEnvironment serviceEnvironment,
-            final OutputWriter outputWriter,
-            final TrustNewIdentity trustNewIdentity
-    ) throws CommandException {
-        try (var m = loadManager(account, dataPath, serviceEnvironment, trustNewIdentity)) {
-            command.handleCommand(ns, m, outputWriter);
-        } catch (IOException e) {
-            logger.warn("Cleanup failed", e);
-        }
-    }
-
-    private void handleLocalCommand(
-            final LocalCommand c,
-            String accountObjectPath,
-            final DBusConnection dBusConn,
-            final OutputWriter outputWriter
-    ) throws CommandException, DBusException {
-        var signal = dBusConn.getRemoteObject(DbusConfig.getBusname(), accountObjectPath, Signal.class);
-        try (final var m = new DbusManagerImpl(signal, dBusConn)) {
-            c.handleCommand(ns, m, outputWriter);
-        } catch (UnsupportedOperationException e) {
-            throw new UserErrorException("Command is not yet implemented via dbus", e);
-        } catch (DBusExecutionException e) {
-            throw new UnexpectedErrorException(e.getMessage(), e);
-        }
-    }
-
-    private void handleMultiLocalCommand(
-            final MultiLocalCommand command,
-            final File dataPath,
-            final ServiceEnvironment serviceEnvironment,
-            final List<String> accounts,
-            final OutputWriter outputWriter,
-            final TrustNewIdentity trustNewIdentity
-    ) throws CommandException {
-        final var managers = new ArrayList<Manager>();
-        for (String a : accounts) {
-            try {
-                managers.add(loadManager(a, dataPath, serviceEnvironment, trustNewIdentity));
-            } catch (CommandException e) {
-                logger.warn("Ignoring {}: {}", a, e.getMessage());
-            }
-        }
-
-        try (var multiAccountManager = new MultiAccountManagerImpl(managers,
-                dataPath,
-                serviceEnvironment,
-                BaseConfig.USER_AGENT)) {
-            command.handleCommand(ns, multiAccountManager, outputWriter);
-        }
-    }
-
-    private void handleMultiLocalCommand(
-            final MultiLocalCommand c, final DBusConnection dBusConn, final OutputWriter outputWriter
-    ) throws CommandException, DBusException {
-        final var signalControl = dBusConn.getRemoteObject(DbusConfig.getBusname(),
-                DbusConfig.getObjectPath(),
-                SignalControl.class);
-        try (final var multiAccountManager = new DbusMultiAccountManagerImpl(signalControl, dBusConn)) {
-            c.handleCommand(ns, multiAccountManager, outputWriter);
-        } catch (UnsupportedOperationException e) {
-            throw new UserErrorException("Command is not yet implemented via dbus", e);
-        }
     }
 
     private Manager loadManager(
             final String account,
-            final File dataPath,
-            final ServiceEnvironment serviceEnvironment,
-            final TrustNewIdentity trustNewIdentity
+            final SignalAccountFiles signalAccountFiles
     ) throws CommandException {
-        Manager manager;
         logger.trace("Loading account file for {}", account);
         try {
-            manager = Manager.init(account, dataPath, serviceEnvironment, BaseConfig.USER_AGENT, trustNewIdentity);
+            if (Manager.isValidAci(account)) {
+                return signalAccountFiles.initManagerByAci(account);
+            } else {
+                return signalAccountFiles.initManagerByNumber(account);
+            }
         } catch (NotRegisteredException e) {
             throw new UserErrorException("User " + account + " is not registered.");
+        } catch (AccountCheckException ace) {
+            if (ace.getCause() instanceof IOException e) {
+                throw new IOErrorException("Error while checking account " + account + ": " + e.getMessage(), e);
+            } else {
+                throw new UnexpectedErrorException("Error while checking account " + account + ": " + ace.getMessage(),
+                        ace);
+            }
         } catch (Throwable e) {
             throw new UnexpectedErrorException("Error loading state file for user "
                     + account
@@ -369,88 +366,6 @@ public class App {
                     + " ("
                     + e.getClass().getSimpleName()
                     + ")", e);
-        }
-
-        logger.trace("Checking account state");
-        try {
-            manager.checkAccountState();
-        } catch (IOException e) {
-            try {
-                manager.close();
-            } catch (IOException ie) {
-                logger.warn("Failed to close broken account", ie);
-            }
-            throw new IOErrorException("Error while checking account " + account + ": " + e.getMessage(), e);
-        }
-
-        return manager;
-    }
-
-    private void initDbusClient(
-            final Command command, final String account, final boolean systemBus, final OutputWriter outputWriter
-    ) throws CommandException {
-        try {
-            DBusConnection.DBusBusType busType;
-            if (systemBus) {
-                busType = DBusConnection.DBusBusType.SYSTEM;
-            } else {
-                busType = DBusConnection.DBusBusType.SESSION;
-            }
-            try (var dBusConn = DBusConnection.getConnection(busType)) {
-                if (command instanceof ProvisioningCommand c) {
-                    if (account != null) {
-                        throw new UserErrorException("You cannot specify a account (phone number) when linking");
-                    }
-
-                    handleProvisioningCommand(c, dBusConn, outputWriter);
-                    return;
-                }
-
-                if (account == null && command instanceof MultiLocalCommand c) {
-                    handleMultiLocalCommand(c, dBusConn, outputWriter);
-                    return;
-                }
-                if (account != null && command instanceof RegistrationCommand c) {
-                    handleRegistrationCommand(c, account, dBusConn, outputWriter);
-                    return;
-                }
-                if (!(command instanceof LocalCommand localCommand)) {
-                    throw new UserErrorException("Command only works in multi-account mode");
-                }
-
-                var accountObjectPath = account == null ? tryGetSingleAccountObjectPath(dBusConn) : null;
-                if (accountObjectPath == null) {
-                    accountObjectPath = DbusConfig.getObjectPath(account);
-                }
-                handleLocalCommand(localCommand, accountObjectPath, dBusConn, outputWriter);
-            }
-        } catch (ServiceUnknown e) {
-            throw new UserErrorException("signal-cli DBus daemon not running on "
-                    + (systemBus ? "system" : "session")
-                    + " bus: "
-                    + e.getMessage(), e);
-        } catch (DBusExecutionException | DBusException | IOException e) {
-            throw new UnexpectedErrorException("Dbus client failed: " + e.getMessage(), e);
-        }
-    }
-
-    private String tryGetSingleAccountObjectPath(final DBusConnection dBusConn) throws DBusException, CommandException {
-        var control = dBusConn.getRemoteObject(DbusConfig.getBusname(),
-                DbusConfig.getObjectPath(),
-                SignalControl.class);
-        try {
-            final var accounts = control.listAccounts();
-            if (accounts.size() == 0) {
-                throw new UserErrorException("No local users found, you first need to register or link an account");
-            } else if (accounts.size() > 1) {
-                throw new UserErrorException(
-                        "Multiple users found, you need to specify an account (phone number) with -a");
-            }
-
-            return accounts.get(0).getPath();
-        } catch (UnknownMethod e) {
-            // dbus daemon not running in multi-account mode
-            return null;
         }
     }
 

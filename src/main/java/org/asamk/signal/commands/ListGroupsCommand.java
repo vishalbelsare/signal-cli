@@ -1,5 +1,7 @@
 package org.asamk.signal.commands;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.Namespace;
 import net.sourceforge.argparse4j.inf.Subparser;
@@ -7,10 +9,12 @@ import net.sourceforge.argparse4j.inf.Subparser;
 import org.asamk.signal.commands.exceptions.CommandException;
 import org.asamk.signal.manager.Manager;
 import org.asamk.signal.manager.api.Group;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
+import org.asamk.signal.manager.api.GroupMember;
+import org.asamk.signal.manager.api.RecipientAddress;
 import org.asamk.signal.output.JsonWriter;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.output.PlainTextWriter;
+import org.asamk.signal.util.CommandUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,7 +24,7 @@ import java.util.stream.Collectors;
 
 public class ListGroupsCommand implements JsonRpcLocalCommand {
 
-    private final static Logger logger = LoggerFactory.getLogger(ListGroupsCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(ListGroupsCommand.class);
 
     @Override
     public String getName() {
@@ -33,80 +37,114 @@ public class ListGroupsCommand implements JsonRpcLocalCommand {
         subparser.addArgument("-d", "--detailed")
                 .action(Arguments.storeTrue())
                 .help("List the members and group invite links of each group. If output=json, then this is always set");
+        subparser.addArgument("-g", "--group-id").help("Specify one or more group IDs to show.").nargs("*");
     }
 
-    private static Set<String> resolveMembers(Set<RecipientAddress> addresses) {
+    private static Set<String> resolveMembers(Set<GroupMember> addresses) {
+        return addresses.stream()
+                .map(m -> m.recipientAddress().getLegacyIdentifier() + (m.isAdmin() ? "{ADMIN}" : "") + (
+                        m.labelEmoji() != null || m.label() != null ? "(" + (
+                                m.labelEmoji() != null ? m.labelEmoji() : ""
+                        ) + (
+                                m.label() != null ? m.label() : ""
+                        ) + ")" : ""
+                ))
+                .collect(Collectors.toSet());
+    }
+
+    private static Set<String> resolveMemberAddress(Set<RecipientAddress> addresses) {
         return addresses.stream().map(RecipientAddress::getLegacyIdentifier).collect(Collectors.toSet());
     }
 
-    private static Set<JsonGroupMember> resolveJsonMembers(Set<RecipientAddress> addresses) {
+    private static Set<JsonGroupMemberAddress> resolveJsonMembers(Set<RecipientAddress> addresses) {
         return addresses.stream()
-                .map(address -> new JsonGroupMember(address.number().orElse(null),
+                .map(address -> new JsonGroupMemberAddress(address.number().orElse(null),
                         address.uuid().map(UUID::toString).orElse(null)))
                 .collect(Collectors.toSet());
     }
 
-    private static void printGroupPlainText(
-            PlainTextWriter writer, Group group, boolean detailed
-    ) {
+    private static Set<JsonGroupMember> resolveFullJsonMembers(Set<GroupMember> addresses) {
+        return addresses.stream().map(member -> {
+            final var address = member.recipientAddress();
+            return new JsonGroupMember(address.number().orElse(null),
+                    address.uuid().map(UUID::toString).orElse(null),
+                    member.isAdmin(),
+                    member.labelEmoji(),
+                    member.label());
+        }).collect(Collectors.toSet());
+    }
+
+    private static void printGroupPlainText(PlainTextWriter writer, Group group, boolean detailed) {
         if (detailed) {
             final var groupInviteLink = group.groupInviteLinkUrl();
 
             writer.println(
-                    "Id: {} Name: {} Description: {} Active: {} Blocked: {} Members: {} Pending members: {} Requesting members: {} Admins: {} Message expiration: {} Link: {}",
+                    "Id: {} Name: {} Description: {} Active: {} Blocked: {} Terminated: {} Members: {} Pending members: {} Requesting members: {} Banned: {} Message expiration: {} Link: {}",
                     group.groupId().toBase64(),
                     group.title(),
                     group.description(),
                     group.isMember(),
                     group.isBlocked(),
+                    group.isTerminated(),
                     resolveMembers(group.members()),
-                    resolveMembers(group.pendingMembers()),
-                    resolveMembers(group.requestingMembers()),
-                    resolveMembers(group.adminMembers()),
+                    resolveMemberAddress(group.pendingMembers()),
+                    resolveMemberAddress(group.requestingMembers()),
+                    resolveMemberAddress(group.bannedMembers()),
                     group.messageExpirationTimer() == 0 ? "disabled" : group.messageExpirationTimer() + "s",
                     groupInviteLink == null ? '-' : groupInviteLink.getUrl());
         } else {
-            writer.println("Id: {} Name: {}  Active: {} Blocked: {}",
+            writer.println("Id: {} Name: {}  Active: {} Blocked: {} Terminated: {}",
                     group.groupId().toBase64(),
                     group.title(),
                     group.isMember(),
-                    group.isBlocked());
+                    group.isBlocked(),
+                    group.isTerminated());
         }
     }
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
-        final var groups = m.getGroups();
+        final var groupIdStrings = ns.<String>getList("group-id");
+        final var groupIds = CommandUtil.getGroupIds(groupIdStrings);
+        var groups = groupIds.isEmpty() ? m.getGroups() : m.getGroups(groupIds);
 
-        if (outputWriter instanceof JsonWriter jsonWriter) {
+        switch (outputWriter) {
+            case JsonWriter jsonWriter -> {
+                var jsonGroups = groups.stream().map(group -> {
+                    final var groupInviteLink = group.groupInviteLinkUrl();
 
-            var jsonGroups = groups.stream().map(group -> {
-                final var groupInviteLink = group.groupInviteLinkUrl();
-
-                return new JsonGroup(group.groupId().toBase64(),
-                        group.title(),
-                        group.description(),
-                        group.isMember(),
-                        group.isBlocked(),
-                        group.messageExpirationTimer(),
-                        resolveJsonMembers(group.members()),
-                        resolveJsonMembers(group.pendingMembers()),
-                        resolveJsonMembers(group.requestingMembers()),
-                        resolveJsonMembers(group.adminMembers()),
-                        group.permissionAddMember().name(),
-                        group.permissionEditDetails().name(),
-                        group.permissionSendMessage().name(),
-                        groupInviteLink == null ? null : groupInviteLink.getUrl());
-            }).toList();
-
-            jsonWriter.write(jsonGroups);
-        } else {
-            final var writer = (PlainTextWriter) outputWriter;
-            boolean detailed = Boolean.TRUE.equals(ns.getBoolean("detailed"));
-            for (var group : groups) {
-                printGroupPlainText(writer, group, detailed);
+                    return new JsonGroup(group.groupId().toBase64(),
+                            group.title(),
+                            group.description(),
+                            group.isMember(),
+                            group.isBlocked(),
+                            group.messageExpirationTimer(),
+                            resolveFullJsonMembers(group.members()),
+                            resolveJsonMembers(group.pendingMembers()),
+                            resolveJsonMembers(group.requestingMembers()),
+                            resolveJsonMembers(group.members()
+                                    .stream()
+                                    .filter(GroupMember::isAdmin)
+                                    .map(GroupMember::recipientAddress)
+                                    .collect(Collectors.toSet())),
+                            resolveJsonMembers(group.bannedMembers()),
+                            group.permissionAddMember().name(),
+                            group.permissionEditDetails().name(),
+                            group.permissionSendMessage().name(),
+                            groupInviteLink == null ? null : groupInviteLink.getUrl(),
+                            group.isTerminated());
+                }).toList();
+                jsonWriter.write(jsonGroups);
+            }
+            case PlainTextWriter writer -> {
+                boolean detailed = Boolean.TRUE.equals(ns.getBoolean("detailed"));
+                for (var group : groups) {
+                    printGroupPlainText(writer, group, detailed);
+                }
             }
         }
     }
@@ -119,14 +157,24 @@ public class ListGroupsCommand implements JsonRpcLocalCommand {
             boolean isBlocked,
             int messageExpirationTime,
             Set<JsonGroupMember> members,
-            Set<JsonGroupMember> pendingMembers,
-            Set<JsonGroupMember> requestingMembers,
-            Set<JsonGroupMember> admins,
+            Set<JsonGroupMemberAddress> pendingMembers,
+            Set<JsonGroupMemberAddress> requestingMembers,
+            @Deprecated Set<JsonGroupMemberAddress> admins,
+            Set<JsonGroupMemberAddress> banned,
             String permissionAddMember,
             String permissionEditDetails,
             String permissionSendMessage,
-            String groupInviteLink
+            String groupInviteLink,
+            boolean isTerminated
     ) {}
 
-    private record JsonGroupMember(String number, String uuid) {}
+    private record JsonGroupMemberAddress(String number, String uuid) {}
+
+    private record JsonGroupMember(
+            String number,
+            String uuid,
+            boolean isAdmin,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String labelEmoji,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String label
+    ) {}
 }

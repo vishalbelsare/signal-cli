@@ -1,10 +1,12 @@
 package org.asamk.signal.util;
 
 import org.asamk.signal.commands.exceptions.CommandException;
+import org.asamk.signal.commands.exceptions.RateLimitErrorException;
 import org.asamk.signal.commands.exceptions.UntrustedKeyErrorException;
 import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.json.JsonSendMessageResult;
 import org.asamk.signal.manager.api.ProofRequiredException;
+import org.asamk.signal.manager.api.RateLimitException;
 import org.asamk.signal.manager.api.RecipientIdentifier;
 import org.asamk.signal.manager.api.SendGroupMessageResults;
 import org.asamk.signal.manager.api.SendMessageResult;
@@ -25,32 +27,42 @@ public class SendMessageResultUtils {
     }
 
     public static void outputResult(final OutputWriter outputWriter, final SendGroupMessageResults sendMessageResults) {
-        if (outputWriter instanceof PlainTextWriter writer) {
-            var errors = getErrorMessagesFromSendMessageResults(sendMessageResults.results());
-            printSendMessageResultErrors(writer, errors);
-            writer.println("{}", sendMessageResults.timestamp());
-        } else {
-            final var writer = (JsonWriter) outputWriter;
-            var results = getJsonSendMessageResults(sendMessageResults.results());
-            writer.write(Map.of("timestamp", sendMessageResults.timestamp(), "results", results));
+        switch (outputWriter) {
+            case PlainTextWriter writer -> {
+                var errors = getErrorMessagesFromSendMessageResults(sendMessageResults.results());
+                printSendMessageResultErrors(writer, errors);
+                writer.println("{}", sendMessageResults.timestamp());
+            }
+            case JsonWriter writer -> {
+                var results = getJsonSendMessageResults(sendMessageResults.results());
+                writer.write(Map.of("timestamp", sendMessageResults.timestamp(), "results", results));
+            }
         }
     }
 
     public static void outputResult(
-            final OutputWriter outputWriter, final SendMessageResults sendMessageResults
+            final OutputWriter outputWriter,
+            final SendMessageResults sendMessageResults
     ) throws CommandException {
-        if (outputWriter instanceof PlainTextWriter writer) {
-            var errors = getErrorMessagesFromSendMessageResults(sendMessageResults.results());
-            printSendMessageResultErrors(writer, errors);
-            writer.println("{}", sendMessageResults.timestamp());
-        } else {
-            final var writer = (JsonWriter) outputWriter;
-            var results = getJsonSendMessageResults(sendMessageResults.results());
-            writer.write(Map.of("timestamp", sendMessageResults.timestamp(), "results", results));
+        switch (outputWriter) {
+            case PlainTextWriter writer -> {
+                var errors = getErrorMessagesFromSendMessageResults(sendMessageResults.results());
+                printSendMessageResultErrors(writer, errors);
+                writer.println("{}", sendMessageResults.timestamp());
+            }
+            case JsonWriter writer -> {
+                var results = getJsonSendMessageResults(sendMessageResults.results());
+                writer.write(Map.of("timestamp", sendMessageResults.timestamp(), "results", results));
+            }
         }
         if (!sendMessageResults.hasSuccess()) {
             if (sendMessageResults.hasOnlyUntrustedIdentity()) {
                 throw new UntrustedKeyErrorException("Failed to send message due to untrusted identities");
+            } else if (sendMessageResults.hasOnlyRateLimitFailure()) {
+                final var retryAfter = sendMessageResults.maxRateLimitRetryAfterMilliseconds();
+                final var nextAttempt = retryAfter == null ? 0L : System.currentTimeMillis() + retryAfter;
+                throw new RateLimitErrorException("Failed to send message due to rate limiting",
+                        new RateLimitException(nextAttempt));
             } else {
                 throw new UserErrorException("Failed to send message");
             }
@@ -82,13 +94,12 @@ public class SendMessageResultUtils {
             return String.format(
                     "CAPTCHA proof required for sending to \"%s\", available options \"%s\" with challenge token \"%s\", or wait \"%d\" seconds.\n"
                             + (
-                            failure.getOptions().contains(ProofRequiredException.Option.RECAPTCHA)
+                            failure.getOptions().contains(ProofRequiredException.Option.CAPTCHA)
                                     ? """
-                                    To get the captcha token, go to https://signalcaptchas.org/challenge/generate.html
-                                    Check the developer tools (F12) console for a failed redirect to signalcaptcha://
-                                    Everything after signalcaptcha:// is the captcha token.
-                                    Use the following command to submit the captcha token:
-                                    signal-cli submitRateLimitChallenge --challenge CHALLENGE_TOKEN --captcha CAPTCHA_TOKEN"""
+                                      To get the captcha token, go to https://signalcaptchas.org/challenge/generate.html
+                                      After solving the captcha, right-click on the "Open Signal" link and copy the link.
+                                      Use the following command to submit the captcha token:
+                                      signal-cli submitRateLimitChallenge --challenge CHALLENGE_TOKEN --captcha CAPTCHA_TOKEN"""
                                     : ""
                     ),
                     identifier,
@@ -97,9 +108,14 @@ public class SendMessageResultUtils {
                             .map(ProofRequiredException.Option::toString)
                             .collect(Collectors.joining(", ")),
                     failure.getToken(),
-                    failure.getRetryAfterSeconds());
+                    Math.ceilDiv(failure.getRetryAfterMilliseconds(), 1000L));
         } else if (result.isNetworkFailure()) {
             return String.format("Network failure for \"%s\"", identifier);
+        } else if (result.isRateLimitFailure()) {
+            final var retryAfter = result.rateLimitRetryAfterMilliseconds();
+            return retryAfter != null ? String.format("Rate limit failure for \"%s\", retry after %d seconds",
+                    identifier,
+                    Math.ceilDiv(retryAfter, 1000L)) : String.format("Rate limit failure for \"%s\"", identifier);
         } else if (result.isUnregisteredFailure()) {
             return String.format("Unregistered user \"%s\"", identifier);
         } else if (result.isIdentityFailure()) {
@@ -109,7 +125,7 @@ public class SendMessageResultUtils {
     }
 
     public static void printSendMessageResultErrors(PlainTextWriter writer, List<String> errors) {
-        if (errors.size() == 0) {
+        if (errors.isEmpty()) {
             return;
         }
         writer.println("Failed to send (some) messages:");

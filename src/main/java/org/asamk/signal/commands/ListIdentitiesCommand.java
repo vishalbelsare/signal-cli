@@ -10,6 +10,7 @@ import org.asamk.signal.output.JsonWriter;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.output.PlainTextWriter;
 import org.asamk.signal.util.CommandUtil;
+import org.asamk.signal.util.DateUtils;
 import org.asamk.signal.util.Hex;
 import org.asamk.signal.util.Util;
 import org.slf4j.Logger;
@@ -21,7 +22,7 @@ import java.util.UUID;
 
 public class ListIdentitiesCommand implements JsonRpcLocalCommand {
 
-    private final static Logger logger = LoggerFactory.getLogger(ListIdentitiesCommand.class);
+    private static final Logger logger = LoggerFactory.getLogger(ListIdentitiesCommand.class);
 
     @Override
     public String getName() {
@@ -32,8 +33,8 @@ public class ListIdentitiesCommand implements JsonRpcLocalCommand {
         writer.println("{}: {} Added: {} Fingerprint: {} Safety Number: {}",
                 theirId.recipient().getLegacyIdentifier(),
                 theirId.trustLevel(),
-                theirId.dateAdded(),
-                Hex.toString(theirId.getFingerprint()),
+                DateUtils.formatTimestamp(theirId.dateAddedTimestamp()),
+                Hex.toString(theirId.fingerprint()),
                 Util.formatSafetyNumber(theirId.safetyNumber()));
     }
 
@@ -45,7 +46,9 @@ public class ListIdentitiesCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         var number = ns.getString("number");
 
@@ -56,28 +59,29 @@ public class ListIdentitiesCommand implements JsonRpcLocalCommand {
             identities = m.getIdentities(CommandUtil.getSingleRecipientIdentifier(number, m.getSelfNumber()));
         }
 
-        if (outputWriter instanceof PlainTextWriter writer) {
-            for (var id : identities) {
-                printIdentityFingerprint(writer, id);
+        switch (outputWriter) {
+            case PlainTextWriter writer -> {
+                for (var id : identities) {
+                    printIdentityFingerprint(writer, id);
+                }
             }
-        } else {
-            final var writer = (JsonWriter) outputWriter;
-            final var jsonIdentities = identities.stream().map(id -> {
-                final var address = id.recipient();
-                var safetyNumber = Util.formatSafetyNumber(id.safetyNumber());
-                var scannableSafetyNumber = id.scannableSafetyNumber();
-                return new JsonIdentity(address.number().orElse(null),
-                        address.uuid().map(UUID::toString).orElse(null),
-                        Hex.toString(id.getFingerprint()),
-                        safetyNumber,
-                        scannableSafetyNumber == null
-                                ? null
-                                : Base64.getEncoder().encodeToString(scannableSafetyNumber),
-                        id.trustLevel().name(),
-                        id.dateAdded().getTime());
-            }).toList();
-
-            writer.write(jsonIdentities);
+            case JsonWriter writer -> {
+                final var jsonIdentities = identities.stream().map(id -> {
+                    final var address = id.recipient();
+                    var safetyNumber = Util.formatSafetyNumber(id.safetyNumber());
+                    var scannableSafetyNumber = id.scannableSafetyNumber();
+                    return new JsonIdentity(address.number().orElse(null),
+                            address.uuid().map(UUID::toString).orElse(null),
+                            Hex.toString(id.fingerprint()),
+                            safetyNumber,
+                            scannableSafetyNumber == null
+                                    ? null
+                                    : Base64.getEncoder().encodeToString(scannableSafetyNumber),
+                            id.trustLevel().name(),
+                            id.dateAddedTimestamp());
+                }).toList();
+                writer.write(jsonIdentities);
+            }
         }
     }
 

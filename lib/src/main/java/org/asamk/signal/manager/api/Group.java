@@ -1,11 +1,7 @@
 package org.asamk.signal.manager.api;
 
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.groups.GroupInviteLinkUrl;
-import org.asamk.signal.manager.groups.GroupPermission;
 import org.asamk.signal.manager.helper.RecipientAddressResolver;
 import org.asamk.signal.manager.storage.groups.GroupInfo;
-import org.asamk.signal.manager.storage.recipients.RecipientAddress;
 import org.asamk.signal.manager.storage.recipients.RecipientId;
 
 import java.util.Set;
@@ -16,21 +12,24 @@ public record Group(
         String title,
         String description,
         GroupInviteLinkUrl groupInviteLinkUrl,
-        Set<RecipientAddress> members,
+        Set<GroupMember> members,
         Set<RecipientAddress> pendingMembers,
         Set<RecipientAddress> requestingMembers,
-        Set<RecipientAddress> adminMembers,
+        Set<RecipientAddress> bannedMembers,
         boolean isBlocked,
         int messageExpirationTimer,
         GroupPermission permissionAddMember,
         GroupPermission permissionEditDetails,
         GroupPermission permissionSendMessage,
         boolean isMember,
-        boolean isAdmin
+        boolean isAdmin,
+        boolean isTerminated
 ) {
 
     public static Group from(
-            final GroupInfo groupInfo, final RecipientAddressResolver recipientStore, final RecipientId selfRecipientId
+            final GroupInfo groupInfo,
+            final RecipientAddressResolver recipientStore,
+            final RecipientId selfRecipientId
     ) {
         return new Group(groupInfo.getGroupId(),
                 groupInfo.getTitle(),
@@ -38,19 +37,22 @@ public record Group(
                 groupInfo.getGroupInviteLink(),
                 groupInfo.getMembers()
                         .stream()
-                        .map(recipientStore::resolveRecipientAddress)
+                        .map(m -> org.asamk.signal.manager.api.GroupMember.from(m, recipientStore))
                         .collect(Collectors.toSet()),
                 groupInfo.getPendingMembers()
                         .stream()
                         .map(recipientStore::resolveRecipientAddress)
+                        .map(org.asamk.signal.manager.storage.recipients.RecipientAddress::toApiRecipientAddress)
                         .collect(Collectors.toSet()),
                 groupInfo.getRequestingMembers()
                         .stream()
                         .map(recipientStore::resolveRecipientAddress)
+                        .map(org.asamk.signal.manager.storage.recipients.RecipientAddress::toApiRecipientAddress)
                         .collect(Collectors.toSet()),
-                groupInfo.getAdminMembers()
+                groupInfo.getBannedMembers()
                         .stream()
                         .map(recipientStore::resolveRecipientAddress)
+                        .map(org.asamk.signal.manager.storage.recipients.RecipientAddress::toApiRecipientAddress)
                         .collect(Collectors.toSet()),
                 groupInfo.isBlocked(),
                 groupInfo.getMessageExpirationTimer(),
@@ -58,6 +60,7 @@ public record Group(
                 groupInfo.getPermissionEditDetails(),
                 groupInfo.getPermissionSendMessage(),
                 groupInfo.isMember(selfRecipientId),
-                groupInfo.isAdmin(selfRecipientId));
+                groupInfo.isAdmin(selfRecipientId),
+                groupInfo.isTerminated());
     }
 }

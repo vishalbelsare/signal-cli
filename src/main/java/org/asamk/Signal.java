@@ -20,55 +20,65 @@ import java.util.Map;
  */
 public interface Signal extends DBusInterface {
 
+    /**
+     * Returns the account's phone number, or an empty string for a numberless account.
+     */
     String getSelfNumber();
+
+    String getSelfACI();
 
     void subscribeReceive();
 
     void unsubscribeReceive();
 
     long sendMessage(
-            String message, List<String> attachments, String recipient
+            String message,
+            List<String> attachments,
+            String recipient
     ) throws Error.AttachmentInvalid, Error.Failure, Error.InvalidNumber, Error.UntrustedIdentity;
 
     long sendMessage(
-            String message, List<String> attachments, List<String> recipients
+            String message,
+            List<String> attachments,
+            List<String> recipients
     ) throws Error.AttachmentInvalid, Error.Failure, Error.InvalidNumber, Error.UntrustedIdentity;
 
-    void sendTyping(
-            String recipient, boolean stop
-    ) throws Error.Failure, Error.UntrustedIdentity;
+    void sendTyping(String recipient, boolean stop) throws Error.Failure, Error.UntrustedIdentity;
 
-    void sendReadReceipt(
-            String recipient, List<Long> messageIds
-    ) throws Error.Failure, Error.UntrustedIdentity;
+    void sendReadReceipt(String recipient, List<Long> messageIds) throws Error.Failure, Error.UntrustedIdentity;
 
-    void sendViewedReceipt(
-            String recipient, List<Long> messageIds
-    ) throws Error.Failure, Error.UntrustedIdentity;
+    void sendViewedReceipt(String recipient, List<Long> messageIds) throws Error.Failure, Error.UntrustedIdentity;
+
+    long sendRemoteDeleteMessage(long targetSentTimestamp, String recipient) throws Error.Failure, Error.InvalidNumber;
 
     long sendRemoteDeleteMessage(
-            long targetSentTimestamp, String recipient
-    ) throws Error.Failure, Error.InvalidNumber;
-
-    long sendRemoteDeleteMessage(
-            long targetSentTimestamp, List<String> recipients
+            long targetSentTimestamp,
+            List<String> recipients
     ) throws Error.Failure, Error.InvalidNumber;
 
     long sendMessageReaction(
-            String emoji, boolean remove, String targetAuthor, long targetSentTimestamp, String recipient
+            String emoji,
+            boolean remove,
+            String targetAuthor,
+            long targetSentTimestamp,
+            String recipient
     ) throws Error.InvalidNumber, Error.Failure;
 
     long sendMessageReaction(
-            String emoji, boolean remove, String targetAuthor, long targetSentTimestamp, List<String> recipients
+            String emoji,
+            boolean remove,
+            String targetAuthor,
+            long targetSentTimestamp,
+            List<String> recipients
     ) throws Error.InvalidNumber, Error.Failure;
+
+    long sendPaymentNotification(byte[] receipt, String note, String recipient) throws Error.Failure;
 
     void sendContacts() throws Error.Failure;
 
     void sendSyncRequest() throws Error.Failure;
 
-    long sendNoteToSelfMessage(
-            String message, List<String> attachments
-    ) throws Error.AttachmentInvalid, Error.Failure;
+    long sendNoteToSelfMessage(String message, List<String> attachments) throws Error.AttachmentInvalid, Error.Failure;
 
     void sendEndSessionMessage(List<String> recipients) throws Error.Failure, Error.InvalidNumber, Error.UntrustedIdentity;
 
@@ -77,19 +87,27 @@ public interface Signal extends DBusInterface {
     void deleteContact(final String recipient) throws Error.Failure;
 
     long sendGroupMessage(
-            String message, List<String> attachments, byte[] groupId
+            String message,
+            List<String> attachments,
+            byte[] groupId
     ) throws Error.GroupNotFound, Error.Failure, Error.AttachmentInvalid, Error.InvalidGroupId;
 
     void sendGroupTyping(
-            final byte[] groupId, final boolean stop
+            final byte[] groupId,
+            final boolean stop
     ) throws Error.Failure, Error.GroupNotFound, Error.UntrustedIdentity;
 
     long sendGroupRemoteDeleteMessage(
-            long targetSentTimestamp, byte[] groupId
+            long targetSentTimestamp,
+            byte[] groupId
     ) throws Error.Failure, Error.GroupNotFound, Error.InvalidGroupId;
 
     long sendGroupMessageReaction(
-            String emoji, boolean remove, String targetAuthor, long targetSentTimestamp, byte[] groupId
+            String emoji,
+            boolean remove,
+            String targetAuthor,
+            long targetSentTimestamp,
+            byte[] groupId
     ) throws Error.GroupNotFound, Error.Failure, Error.InvalidNumber, Error.InvalidGroupId;
 
     String getContactName(String number) throws Error.InvalidNumber;
@@ -117,16 +135,18 @@ public interface Signal extends DBusInterface {
     List<String> getGroupMembers(byte[] groupId) throws Error.InvalidGroupId;
 
     byte[] createGroup(
-            String name, List<String> members, String avatar
+            String name,
+            List<String> members,
+            String avatar
     ) throws Error.AttachmentInvalid, Error.Failure, Error.InvalidNumber;
 
     @Deprecated
     byte[] updateGroup(
-            byte[] groupId, String name, List<String> members, String avatar
+            byte[] groupId,
+            String name,
+            List<String> members,
+            String avatar
     ) throws Error.AttachmentInvalid, Error.Failure, Error.InvalidNumber, Error.GroupNotFound, Error.InvalidGroupId;
-
-    @Deprecated
-    boolean isRegistered() throws Error.Failure, Error.InvalidNumber;
 
     boolean isRegistered(String number) throws Error.Failure, Error.InvalidNumber;
 
@@ -135,6 +155,10 @@ public interface Signal extends DBusInterface {
     void addDevice(String uri) throws Error.InvalidUri;
 
     DBusPath getDevice(long deviceId);
+
+    DBusPath getIdentity(String number);
+
+    List<StructIdentity> listIdentities();
 
     List<StructDevice> listDevices() throws Error.Failure;
 
@@ -150,7 +174,11 @@ public interface Signal extends DBusInterface {
     ) throws Error.Failure;
 
     void updateProfile(
-            String name, String about, String aboutEmoji, String avatarPath, boolean removeAvatar
+            String name,
+            String about,
+            String aboutEmoji,
+            String avatarPath,
+            boolean removeAvatar
     ) throws Error.Failure;
 
     void removePin();
@@ -160,6 +188,8 @@ public interface Signal extends DBusInterface {
     String version();
 
     List<String> listNumbers();
+
+    List<String> listRecipientIdentifiers();
 
     List<String> getContactNumber(final String name) throws Error.Failure;
 
@@ -210,6 +240,58 @@ public interface Signal extends DBusInterface {
 
         public long getTimestamp() {
             return timestamp;
+        }
+
+        public String getSender() {
+            return sender;
+        }
+
+        public byte[] getGroupId() {
+            return groupId;
+        }
+
+        public String getMessage() {
+            return message;
+        }
+
+        public Map<String, Variant<?>> getExtras() {
+            return extras;
+        }
+    }
+
+    class EditMessageReceived extends DBusSignal {
+
+        private final long timestamp;
+        private final long targetSentTimestamp;
+        private final String sender;
+        private final byte[] groupId;
+        private final String message;
+        private final Map<String, Variant<?>> extras;
+
+        public EditMessageReceived(
+                String objectpath,
+                long timestamp,
+                final long targetSentTimestamp,
+                String sender,
+                byte[] groupId,
+                String message,
+                final Map<String, Variant<?>> extras
+        ) throws DBusException {
+            super(objectpath, timestamp, targetSentTimestamp, sender, groupId, message, extras);
+            this.timestamp = timestamp;
+            this.targetSentTimestamp = targetSentTimestamp;
+            this.sender = sender;
+            this.groupId = groupId;
+            this.message = message;
+            this.extras = extras;
+        }
+
+        public long getTimestamp() {
+            return timestamp;
+        }
+
+        public long getTargetSentTimestamp() {
+            return targetSentTimestamp;
         }
 
         public String getSender() {
@@ -439,13 +521,13 @@ public interface Signal extends DBusInterface {
     class StructDevice extends Struct {
 
         @Position(0)
-        DBusPath objectPath;
+        final DBusPath objectPath;
 
         @Position(1)
-        Long id;
+        final Long id;
 
         @Position(2)
-        String name;
+        final String name;
 
         public StructDevice(final DBusPath objectPath, final Long id, final String name) {
             this.objectPath = objectPath;
@@ -466,7 +548,7 @@ public interface Signal extends DBusInterface {
         }
     }
 
-    @DBusProperty(name = "Id", type = Long.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "Id", type = Integer.class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "Name", type = String.class)
     @DBusProperty(name = "Created", type = String.class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "LastSeen", type = String.class, access = DBusProperty.Access.READ)
@@ -484,13 +566,13 @@ public interface Signal extends DBusInterface {
     class StructGroup extends Struct {
 
         @Position(0)
-        DBusPath objectPath;
+        final DBusPath objectPath;
 
         @Position(1)
-        byte[] id;
+        final byte[] id;
 
         @Position(2)
-        String name;
+        final String name;
 
         public StructGroup(final DBusPath objectPath, final byte[] id, final String name) {
             this.objectPath = objectPath;
@@ -518,11 +600,13 @@ public interface Signal extends DBusInterface {
     @DBusProperty(name = "IsBlocked", type = Boolean.class)
     @DBusProperty(name = "IsMember", type = Boolean.class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "IsAdmin", type = Boolean.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "IsTerminated", type = Boolean.class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "MessageExpirationTimer", type = Integer.class)
     @DBusProperty(name = "Members", type = String[].class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "PendingMembers", type = String[].class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "RequestingMembers", type = String[].class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "Admins", type = String[].class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "Banned", type = String[].class, access = DBusProperty.Access.READ)
     @DBusProperty(name = "PermissionAddMember", type = String.class)
     @DBusProperty(name = "PermissionEditDetails", type = String.class)
     @DBusProperty(name = "PermissionSendMessage", type = String.class)
@@ -532,6 +616,8 @@ public interface Signal extends DBusInterface {
         void quitGroup() throws Error.Failure, Error.LastGroupAdmin;
 
         void deleteGroup() throws Error.Failure;
+
+        void terminateGroup() throws Error.Failure;
 
         void addMembers(List<String> recipients) throws Error.Failure;
 
@@ -546,6 +632,50 @@ public interface Signal extends DBusInterface {
         void disableLink() throws Error.Failure;
 
         void enableLink(boolean requiresApproval) throws Error.Failure;
+    }
+
+    class StructIdentity extends Struct {
+
+        @Position(0)
+        final DBusPath objectPath;
+
+        @Position(1)
+        final String uuid;
+
+        @Position(2)
+        final String number;
+
+        public StructIdentity(final DBusPath objectPath, final String uuid, final String number) {
+            this.objectPath = objectPath;
+            this.uuid = uuid;
+            this.number = number;
+        }
+
+        public DBusPath getObjectPath() {
+            return objectPath;
+        }
+
+        public String getUuid() {
+            return uuid;
+        }
+
+        public String getNumber() {
+            return number;
+        }
+    }
+
+    @DBusProperty(name = "Number", type = String.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "Uuid", type = String.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "Fingerprint", type = Byte[].class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "SafetyNumber", type = String.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "TrustLevel", type = String.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "AddedDate", type = Long.class, access = DBusProperty.Access.READ)
+    @DBusProperty(name = "ScannableSafetyNumber", type = Byte[].class, access = DBusProperty.Access.READ)
+    interface Identity extends DBusInterface, Properties {
+
+        void trust() throws Error.Failure;
+
+        void trustVerified(String safetyNumber) throws Error.Failure;
     }
 
     interface Error {
@@ -586,6 +716,13 @@ public interface Signal extends DBusInterface {
 
             public GroupNotFound(final String message) {
                 super("Group not found: " + message);
+            }
+        }
+
+        class NotAGroupMember extends DBusExecutionException {
+
+            public NotAGroupMember(final String message) {
+                super("Not a group member: " + message);
             }
         }
 

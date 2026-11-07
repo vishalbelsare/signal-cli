@@ -7,7 +7,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import org.asamk.signal.manager.storage.Utils;
 import org.asamk.signal.manager.storage.recipients.RecipientAddress;
-import org.whispersystems.signalservice.api.util.UuidUtil;
+import org.signal.core.models.ServiceId.ACI;
+import org.signal.core.util.UuidUtil;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -30,7 +31,8 @@ public class LegacyJsonSessionStore {
 
         @Override
         public LegacyJsonSessionStore deserialize(
-                JsonParser jsonParser, DeserializationContext deserializationContext
+                JsonParser jsonParser,
+                DeserializationContext deserializationContext
         ) throws IOException {
             JsonNode node = jsonParser.getCodec().readTree(jsonParser);
 
@@ -39,15 +41,15 @@ public class LegacyJsonSessionStore {
             if (node.isArray()) {
                 for (var session : node) {
                     var sessionName = session.hasNonNull("name") ? session.get("name").asText() : null;
-                    if (UuidUtil.isUuid(sessionName)) {
+                    if (UuidUtil.INSTANCE.isUuid(sessionName)) {
                         // Ignore sessions that were incorrectly created with UUIDs as name
                         continue;
                     }
 
                     var uuid = session.hasNonNull("uuid") ? UuidUtil.parseOrNull(session.get("uuid").asText()) : null;
                     final var address = uuid == null
-                            ? Utils.getRecipientAddressFromIdentifier(sessionName)
-                            : new RecipientAddress(uuid, sessionName);
+                            ? Utils.getRecipientAddressFromLegacyIdentifier(sessionName)
+                            : new RecipientAddress(ACI.from(uuid), sessionName);
                     final var deviceId = session.get("deviceId").asInt();
                     final var record = Base64.getDecoder().decode(session.get("record").asText());
                     var sessionInfo = new LegacySessionInfo(address, deviceId, record);

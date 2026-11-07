@@ -10,8 +10,6 @@ import org.asamk.signal.manager.api.SendMessageResults;
 import org.asamk.signal.output.OutputWriter;
 import org.asamk.signal.util.CommandUtil;
 
-import java.io.IOException;
-
 import static org.asamk.signal.util.SendMessageResultUtils.outputResult;
 
 public class SendReceiptCommand implements JsonRpcLocalCommand {
@@ -28,6 +26,7 @@ public class SendReceiptCommand implements JsonRpcLocalCommand {
         subparser.addArgument("-t", "--target-timestamp")
                 .type(long.class)
                 .nargs("+")
+                .required(true)
                 .help("Specify the timestamp of the messages for which a receipt should be sent.");
         subparser.addArgument("--type")
                 .help("Specify the receipt type (default is read receipt).")
@@ -36,7 +35,9 @@ public class SendReceiptCommand implements JsonRpcLocalCommand {
 
     @Override
     public void handleCommand(
-            final Namespace ns, final Manager m, final OutputWriter outputWriter
+            final Namespace ns,
+            final Manager m,
+            final OutputWriter outputWriter
     ) throws CommandException {
         final var recipientString = ns.getString("recipient");
         final var recipient = CommandUtil.getSingleRecipientIdentifier(recipientString, m.getSelfNumber());
@@ -44,19 +45,14 @@ public class SendReceiptCommand implements JsonRpcLocalCommand {
         final var targetTimestamps = ns.<Long>getList("target-timestamp");
         final var type = ns.getString("type");
 
-        try {
-            final SendMessageResults results;
-            if (type == null || "read".equals(type)) {
-                results = m.sendReadReceipt(recipient, targetTimestamps);
-            } else if ("viewed".equals(type)) {
-                results = m.sendViewedReceipt(recipient, targetTimestamps);
-            } else {
-                throw new UserErrorException("Unknown receipt type: " + type);
-            }
-            outputResult(outputWriter, results);
-        } catch (IOException e) {
-            throw new UserErrorException("Failed to send message: " + e.getMessage() + " (" + e.getClass()
-                    .getSimpleName() + ")");
+        final SendMessageResults results;
+        if (type == null || "read".equals(type)) {
+            results = m.sendReadReceipt(recipient, targetTimestamps);
+        } else if ("viewed".equals(type)) {
+            results = m.sendViewedReceipt(recipient, targetTimestamps);
+        } else {
+            throw new UserErrorException("Unknown receipt type: " + type);
         }
+        outputResult(outputWriter, results);
     }
 }

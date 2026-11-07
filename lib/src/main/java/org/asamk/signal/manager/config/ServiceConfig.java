@@ -1,66 +1,64 @@
 package org.asamk.signal.manager.config;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.asamk.signal.manager.api.ServiceEnvironment;
+import org.signal.libsignal.protocol.util.Medium;
+import org.signal.network.config.SignalProxy;
 import org.whispersystems.signalservice.api.account.AccountAttributes;
-import org.whispersystems.signalservice.api.push.TrustStore;
 
-import java.io.IOException;
-import java.security.KeyStore;
-import java.security.KeyStoreException;
-import java.security.NoSuchAlgorithmException;
-import java.security.cert.CertificateException;
+import java.net.InetAddress;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
+import okhttp3.Dns;
 import okhttp3.Interceptor;
 
 public class ServiceConfig {
 
-    private final static Logger logger = LoggerFactory.getLogger(ServiceConfig.class);
+    public static final int PREKEY_MINIMUM_COUNT = 10;
+    public static final int PREKEY_BATCH_SIZE = 100;
+    public static final int PREKEY_MAXIMUM_ID = Medium.MAX_VALUE;
+    public static final long PREKEY_ARCHIVE_AGE = TimeUnit.DAYS.toMillis(30);
+    public static final long PREKEY_STALE_AGE = TimeUnit.DAYS.toMillis(90);
+    public static final long SIGNED_PREKEY_ROTATE_AGE = TimeUnit.DAYS.toMillis(2);
 
-    public final static int PREKEY_MINIMUM_COUNT = 20;
-    public final static int PREKEY_BATCH_SIZE = 100;
-    public final static int MAX_ATTACHMENT_SIZE = 150 * 1024 * 1024;
-    public final static long MAX_ENVELOPE_SIZE = 0;
-    public final static long AVATAR_DOWNLOAD_FAILSAFE_MAX_SIZE = 10 * 1024 * 1024;
-    public final static boolean AUTOMATIC_NETWORK_RETRY = true;
+    public static final int MAX_ATTACHMENT_SIZE = 150 * 1024 * 1024;
+    public static final long MAX_ENVELOPE_SIZE = 0;
+    public static final int MAX_INCREMENTAL_MACS_PER_ENVELOPE = 10;
+    public static final int MAX_MESSAGE_SIZE_BYTES = 2000;
+    public static final long AVATAR_DOWNLOAD_FAILSAFE_MAX_SIZE = 10 * 1024 * 1024;
+    public static final boolean AUTOMATIC_NETWORK_RETRY = true;
+    public static final int GROUP_MAX_SIZE = 1001;
+    public static final int MAXIMUM_ONE_OFF_REQUEST_SIZE = 3;
+    public static final long UNREGISTERED_LIFESPAN = TimeUnit.DAYS.toMillis(30);
 
-    private final static KeyStore iasKeyStore;
-
-    public static final AccountAttributes.Capabilities capabilities;
-
-    static {
-        capabilities = new AccountAttributes.Capabilities(false, true, false, true, true, true, false);
-
-        try {
-            TrustStore contactTrustStore = new IasTrustStore();
-
-            var keyStore = KeyStore.getInstance("BKS");
-            keyStore.load(contactTrustStore.getKeyStoreInputStream(),
-                    contactTrustStore.getKeyStorePassword().toCharArray());
-
-            iasKeyStore = keyStore;
-        } catch (KeyStoreException | CertificateException | IOException | NoSuchAlgorithmException e) {
-            throw new AssertionError(e);
-        }
-    }
-
-    public static boolean isSignalClientAvailable() {
-        try {
-            org.signal.client.internal.Native.DeviceTransfer_GeneratePrivateKey();
-            return true;
-        } catch (UnsatisfiedLinkError e) {
-            logger.warn("Failed to call libsignal-client: {}", e.getMessage());
-            return false;
-        }
-    }
-
-    public static KeyStore getIasKeyStore() {
-        return iasKeyStore;
+    public static AccountAttributes.Capabilities getCapabilities(
+            final boolean isPrimaryDevice,
+            final boolean hasPhoneNumber
+    ) {
+        final var attachmentBackfill = !isPrimaryDevice;
+        final var spqr = true;
+        final var usernameSyncChangeMessage = !isPrimaryDevice;
+        final var optionalPhoneNumber = !isPrimaryDevice || !hasPhoneNumber;
+        return new AccountAttributes.Capabilities(true,
+                true,
+                attachmentBackfill,
+                spqr,
+                usernameSyncChangeMessage,
+                optionalPhoneNumber);
     }
 
     public static ServiceEnvironmentConfig getServiceEnvironmentConfig(
-            ServiceEnvironment serviceEnvironment, String userAgent
+            ServiceEnvironment serviceEnvironment,
+            String userAgent
+    ) {
+        return getServiceEnvironmentConfig(serviceEnvironment, userAgent, Optional.empty());
+    }
+
+    public static ServiceEnvironmentConfig getServiceEnvironmentConfig(
+            ServiceEnvironment serviceEnvironment,
+            String userAgent,
+            Optional<SignalProxy> tlsProxy
     ) {
         final Interceptor userAgentInterceptor = chain -> chain.proceed(chain.request()
                 .newBuilder()
@@ -70,14 +68,22 @@ public class ServiceConfig {
         final var interceptors = List.of(userAgentInterceptor);
 
         return switch (serviceEnvironment) {
-            case LIVE -> new ServiceEnvironmentConfig(LiveConfig.createDefaultServiceConfiguration(interceptors),
-                    LiveConfig.getUnidentifiedSenderTrustRoot(),
-                    LiveConfig.createKeyBackupConfig(),
-                    LiveConfig.getCdsMrenclave());
-            case STAGING -> new ServiceEnvironmentConfig(StagingConfig.createDefaultServiceConfiguration(interceptors),
-                    StagingConfig.getUnidentifiedSenderTrustRoot(),
-                    StagingConfig.createKeyBackupConfig(),
-                    StagingConfig.getCdsMrenclave());
+            case LIVE -> LiveConfig.getServiceEnvironmentConfig(interceptors, tlsProxy);
+            case STAGING -> StagingConfig.getServiceEnvironmentConfig(interceptors, tlsProxy);
+        };
+    }
+
+    /**
+     * Behind a Signal TLS proxy every connection goes to the proxy, regardless of the address resolved for the
+     * target host. Only the proxy host is looked up, so that the Signal host names don't reach the local resolver,
+     * which might block or log them.
+     */
+    static Dns dnsBehindTlsProxy(SignalProxy proxy) {
+        return hostname -> {
+            if (hostname.equalsIgnoreCase(proxy.getHost())) {
+                return Dns.SYSTEM.lookup(hostname);
+            }
+            return List.of(InetAddress.getByAddress(hostname, new byte[]{127, 0, 0, 1}));
         };
     }
 }

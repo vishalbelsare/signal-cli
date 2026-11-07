@@ -1,7 +1,7 @@
 package org.asamk.signal.manager.api;
 
 import org.asamk.signal.manager.util.Utils;
-import org.whispersystems.signalservice.internal.util.Hex;
+import org.signal.core.util.Hex;
 
 import java.io.IOException;
 import java.net.URI;
@@ -11,10 +11,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.whispersystems.signalservice.internal.util.Util.isEmpty;
 
-public final class StickerPackUrl {
-
-    private final StickerPackId packId;
-    private final byte[] packKey;
+public record StickerPackUrl(StickerPackId packId, byte[] packKey) {
 
     /**
      * @throws InvalidStickerPackLinkException If url cannot be parsed.
@@ -22,7 +19,7 @@ public final class StickerPackUrl {
     public static StickerPackUrl fromUri(URI uri) throws InvalidStickerPackLinkException {
         final var rawQuery = uri.getRawFragment();
         if (isEmpty(rawQuery)) {
-            throw new RuntimeException("Invalid sticker pack uri");
+            throw new InvalidStickerPackLinkException("Invalid sticker pack uri");
         }
 
         var query = Utils.getQueryMap(rawQuery);
@@ -48,11 +45,6 @@ public final class StickerPackUrl {
         return new StickerPackUrl(packId, packKey);
     }
 
-    public StickerPackUrl(final StickerPackId packId, final byte[] packKey) {
-        this.packId = packId;
-        this.packKey = packKey;
-    }
-
     public URI getUrl() {
         try {
             return new URI("https",
@@ -67,15 +59,7 @@ public final class StickerPackUrl {
         }
     }
 
-    public StickerPackId getPackId() {
-        return packId;
-    }
-
-    public byte[] getPackKey() {
-        return packKey;
-    }
-
-    public final static class InvalidStickerPackLinkException extends Exception {
+    public static final class InvalidStickerPackLinkException extends Exception {
 
         public InvalidStickerPackLinkException(String message) {
             super(message);

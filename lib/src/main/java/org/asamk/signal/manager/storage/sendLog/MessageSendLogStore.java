@@ -1,32 +1,26 @@
 package org.asamk.signal.manager.storage.sendLog;
 
-import org.asamk.signal.manager.groups.GroupId;
+import org.asamk.signal.manager.api.GroupId;
 import org.asamk.signal.manager.groups.GroupUtils;
 import org.asamk.signal.manager.storage.Database;
-import org.asamk.signal.manager.storage.recipients.RecipientId;
-import org.asamk.signal.manager.storage.recipients.RecipientResolver;
-import org.signal.zkgroup.InvalidInputException;
-import org.signal.zkgroup.groups.GroupMasterKey;
+import org.asamk.signal.manager.storage.Utils;
+import org.signal.core.models.ServiceId;
+import org.signal.libsignal.zkgroup.InvalidInputException;
+import org.signal.libsignal.zkgroup.groups.GroupMasterKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.whispersystems.signalservice.api.crypto.ContentHint;
 import org.whispersystems.signalservice.api.messages.SendMessageResult;
-import org.whispersystems.signalservice.internal.push.SignalServiceProtos;
+import org.whispersystems.signalservice.internal.push.Content;
 
 import java.io.IOException;
 import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Spliterator;
-import java.util.Spliterators;
-import java.util.function.Consumer;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
 public class MessageSendLogStore implements AutoCloseable {
 
@@ -37,85 +31,77 @@ public class MessageSendLogStore implements AutoCloseable {
 
     private static final Duration LOG_DURATION = Duration.ofDays(1);
 
-    private final RecipientResolver recipientResolver;
     private final Database database;
     private final Thread cleanupThread;
+    private final boolean sendLogDisabled;
 
-    public MessageSendLogStore(
-            final RecipientResolver recipientResolver, final Database database
-    ) {
-        this.recipientResolver = recipientResolver;
+    public MessageSendLogStore(final Database database, final boolean disableMessageSendLog) {
         this.database = database;
-        this.cleanupThread = new Thread(() -> {
+        this.sendLogDisabled = disableMessageSendLog;
+        this.cleanupThread = Thread.ofPlatform().name("msl-cleanup").daemon().start(() -> {
             try {
                 final var interval = Duration.ofHours(1).toMillis();
-                while (true) {
+                while (!Thread.interrupted()) {
                     try (final var connection = database.getConnection()) {
                         deleteOutdatedEntries(connection);
-                        Thread.sleep(interval);
                     } catch (SQLException e) {
+                        logger.debug("MSL", e);
                         logger.warn("Deleting outdated entries failed");
                         break;
                     }
+                    Thread.sleep(interval);
                 }
             } catch (InterruptedException e) {
                 logger.debug("Stopping msl cleanup thread");
             }
         });
-        cleanupThread.setName("msl-cleanup");
-        cleanupThread.setDaemon(true);
-        cleanupThread.start();
     }
 
     public static void createSql(Connection connection) throws SQLException {
+        // When modifying the CREATE statement here, also add a migration in AccountDatabase.java
         try (final var statement = connection.createStatement()) {
             statement.executeUpdate("""
-                    CREATE TABLE message_send_log (
-                      _id INTEGER PRIMARY KEY,
-                      content_id INTEGER NOT NULL REFERENCES message_send_log_content (_id) ON DELETE CASCADE,
-                      recipient_id INTEGER NOT NULL,
-                      device_id INTEGER NOT NULL
-                    );
-                    CREATE TABLE message_send_log_content (
-                      _id INTEGER PRIMARY KEY,
-                      group_id BLOB,
-                      timestamp INTEGER NOT NULL,
-                      content BLOB NOT NULL,
-                      content_hint INTEGER NOT NULL
-                    );
-                    CREATE INDEX mslc_timestamp_index ON message_send_log_content (timestamp);
-                    CREATE INDEX msl_recipient_index ON message_send_log (recipient_id, device_id, content_id);
-                    CREATE INDEX msl_content_index ON message_send_log (content_id);
-                    """);
+                                    CREATE TABLE message_send_log (
+                                      _id INTEGER PRIMARY KEY,
+                                      content_id INTEGER NOT NULL REFERENCES message_send_log_content (_id) ON DELETE CASCADE,
+                                      address TEXT NOT NULL,
+                                      device_id INTEGER NOT NULL
+                                    ) STRICT;
+                                    CREATE TABLE message_send_log_content (
+                                      _id INTEGER PRIMARY KEY,
+                                      group_id BLOB,
+                                      timestamp INTEGER NOT NULL,
+                                      content BLOB NOT NULL,
+                                      content_hint INTEGER NOT NULL,
+                                      urgent INTEGER NOT NULL
+                                    ) STRICT;
+                                    CREATE INDEX mslc_timestamp_index ON message_send_log_content (timestamp);
+                                    CREATE INDEX msl_recipient_index ON message_send_log (address, device_id, content_id);
+                                    CREATE INDEX msl_content_index ON message_send_log (content_id);
+                                    """);
         }
     }
 
     public List<MessageSendLogEntry> findMessages(
-            final RecipientId recipientId, final int deviceId, final long timestamp, final boolean isSenderKey
+            final ServiceId serviceId,
+            final int deviceId,
+            final long timestamp,
+            final boolean isSenderKey
     ) {
+        final var sql = """
+                        SELECT group_id, content, content_hint, urgent
+                        FROM %s l
+                             INNER JOIN %s lc ON l.content_id = lc._id
+                        WHERE l.address = ? AND l.device_id = ? AND lc.timestamp = ?
+                        """.formatted(TABLE_MESSAGE_SEND_LOG, TABLE_MESSAGE_SEND_LOG_CONTENT);
         try (final var connection = database.getConnection()) {
             deleteOutdatedEntries(connection);
 
-            try (final var statement = connection.prepareStatement(
-                    "SELECT group_id, content, content_hint FROM %s l INNER JOIN %s lc ON l.content_id = lc._id WHERE l.recipient_id = ? AND l.device_id = ? AND lc.timestamp = ?".formatted(
-                            TABLE_MESSAGE_SEND_LOG,
-                            TABLE_MESSAGE_SEND_LOG_CONTENT))) {
-                statement.setLong(1, recipientId.id());
+            try (final var statement = connection.prepareStatement(sql)) {
+                statement.setString(1, serviceId.toString());
                 statement.setInt(2, deviceId);
                 statement.setLong(3, timestamp);
-                try (var result = executeQueryForStream(statement, resultSet -> {
-                    final var groupId = Optional.ofNullable(resultSet.getBytes("group_id"))
-                            .map(GroupId::unknownVersion);
-                    final SignalServiceProtos.Content content;
-                    try {
-                        content = SignalServiceProtos.Content.parseFrom(resultSet.getBinaryStream("content"));
-                    } catch (IOException e) {
-                        logger.warn("Failed to parse content from message send log", e);
-                        return null;
-                    }
-                    final var contentHint = ContentHint.fromType(resultSet.getInt("content_hint"));
-                    return new MessageSendLogEntry(groupId, content, contentHint);
-                })) {
+                try (var result = Utils.executeQueryForStream(statement, this::getMessageSendLogEntryFromResultSet)) {
                     return result.filter(Objects::nonNull)
                             .filter(e -> !isSenderKey || e.groupId().isPresent())
                             .toList();
@@ -128,8 +114,14 @@ public class MessageSendLogStore implements AutoCloseable {
     }
 
     public long insertIfPossible(
-            long sentTimestamp, SendMessageResult sendMessageResult, ContentHint contentHint
+            long sentTimestamp,
+            SendMessageResult sendMessageResult,
+            ContentHint contentHint,
+            boolean urgent
     ) {
+        if (sendLogDisabled) {
+            return -1;
+        }
         final RecipientDevices recipientDevice = getRecipientDevices(sendMessageResult);
         if (recipientDevice == null) {
             return -1;
@@ -138,12 +130,19 @@ public class MessageSendLogStore implements AutoCloseable {
         return insert(List.of(recipientDevice),
                 sentTimestamp,
                 sendMessageResult.getSuccess().getContent().get(),
-                contentHint);
+                contentHint,
+                urgent);
     }
 
     public long insertIfPossible(
-            long sentTimestamp, List<SendMessageResult> sendMessageResults, ContentHint contentHint
+            long sentTimestamp,
+            List<SendMessageResult> sendMessageResults,
+            ContentHint contentHint,
+            boolean urgent
     ) {
+        if (sendLogDisabled) {
+            return -1;
+        }
         final var recipientDevices = sendMessageResults.stream()
                 .map(this::getRecipientDevices)
                 .filter(Objects::nonNull)
@@ -158,10 +157,13 @@ public class MessageSendLogStore implements AutoCloseable {
                 .findFirst()
                 .get();
 
-        return insert(recipientDevices, sentTimestamp, content, contentHint);
+        return insert(recipientDevices, sentTimestamp, content, contentHint, urgent);
     }
 
     public void addRecipientToExistingEntryIfPossible(final long contentId, final SendMessageResult sendMessageResult) {
+        if (sendLogDisabled) {
+            return;
+        }
         final RecipientDevices recipientDevice = getRecipientDevices(sendMessageResult);
         if (recipientDevice == null) {
             return;
@@ -171,8 +173,12 @@ public class MessageSendLogStore implements AutoCloseable {
     }
 
     public void addRecipientToExistingEntryIfPossible(
-            final long contentId, final List<SendMessageResult> sendMessageResults
+            final long contentId,
+            final List<SendMessageResult> sendMessageResults
     ) {
+        if (sendLogDisabled) {
+            return;
+        }
         final var recipientDevices = sendMessageResults.stream()
                 .map(this::getRecipientDevices)
                 .filter(Objects::nonNull)
@@ -185,10 +191,12 @@ public class MessageSendLogStore implements AutoCloseable {
     }
 
     public void deleteEntryForGroup(long sentTimestamp, GroupId groupId) {
+        final var sql = """
+                        DELETE FROM %s AS lc
+                        WHERE lc.timestamp = ? AND lc.group_id = ?
+                        """.formatted(TABLE_MESSAGE_SEND_LOG_CONTENT);
         try (final var connection = database.getConnection()) {
-            try (final var statement = connection.prepareStatement(
-                    "DELETE FROM %s AS lc WHERE lc.timestamp = ? AND lc.group_id = ?".formatted(
-                            TABLE_MESSAGE_SEND_LOG_CONTENT))) {
+            try (final var statement = connection.prepareStatement(sql)) {
                 statement.setLong(1, sentTimestamp);
                 statement.setBytes(2, groupId.serialize());
                 statement.executeUpdate();
@@ -198,15 +206,16 @@ public class MessageSendLogStore implements AutoCloseable {
         }
     }
 
-    public void deleteEntryForRecipientNonGroup(long sentTimestamp, RecipientId recipientId) {
+    public void deleteEntryForRecipientNonGroup(long sentTimestamp, ServiceId serviceId) {
+        final var sql = """
+                        DELETE FROM %s AS lc
+                        WHERE lc.timestamp = ? AND lc.group_id IS NULL AND lc._id IN (SELECT content_id FROM %s l WHERE l.address = ?)
+                        """.formatted(TABLE_MESSAGE_SEND_LOG_CONTENT, TABLE_MESSAGE_SEND_LOG);
         try (final var connection = database.getConnection()) {
             connection.setAutoCommit(false);
-            try (final var statement = connection.prepareStatement(
-                    "DELETE FROM %s AS lc WHERE lc.timestamp = ? AND lc.group_id IS NULL AND lc._id IN (SELECT content_id FROM %s l WHERE l.recipient_id = ?)".formatted(
-                            TABLE_MESSAGE_SEND_LOG_CONTENT,
-                            TABLE_MESSAGE_SEND_LOG))) {
+            try (final var statement = connection.prepareStatement(sql)) {
                 statement.setLong(1, sentTimestamp);
-                statement.setLong(2, recipientId.id());
+                statement.setString(2, serviceId.toString());
                 statement.executeUpdate();
             }
 
@@ -217,20 +226,21 @@ public class MessageSendLogStore implements AutoCloseable {
         }
     }
 
-    public void deleteEntryForRecipient(long sentTimestamp, RecipientId recipientId, int deviceId) {
-        deleteEntriesForRecipient(List.of(sentTimestamp), recipientId, deviceId);
+    public void deleteEntryForRecipient(long sentTimestamp, ServiceId serviceId, int deviceId) {
+        deleteEntriesForRecipient(List.of(sentTimestamp), serviceId, deviceId);
     }
 
-    public void deleteEntriesForRecipient(List<Long> sentTimestamps, RecipientId recipientId, int deviceId) {
+    public void deleteEntriesForRecipient(List<Long> sentTimestamps, ServiceId serviceId, int deviceId) {
+        final var sql = """
+                        DELETE FROM %s AS l
+                        WHERE l.content_id IN (SELECT _id FROM %s lc WHERE lc.timestamp = ?) AND l.address = ? AND l.device_id = ?
+                        """.formatted(TABLE_MESSAGE_SEND_LOG, TABLE_MESSAGE_SEND_LOG_CONTENT);
         try (final var connection = database.getConnection()) {
             connection.setAutoCommit(false);
-            try (final var statement = connection.prepareStatement(
-                    "DELETE FROM %s AS l WHERE l.content_id IN (SELECT _id FROM %s lc WHERE lc.timestamp = ?) AND l.recipient_id = ? AND l.device_id = ?".formatted(
-                            TABLE_MESSAGE_SEND_LOG,
-                            TABLE_MESSAGE_SEND_LOG_CONTENT))) {
+            try (final var statement = connection.prepareStatement(sql)) {
                 for (final var sentTimestamp : sentTimestamps) {
                     statement.setLong(1, sentTimestamp);
-                    statement.setLong(2, recipientId.id());
+                    statement.setString(2, serviceId.toString());
                     statement.setInt(3, deviceId);
                     statement.executeUpdate();
                 }
@@ -254,8 +264,8 @@ public class MessageSendLogStore implements AutoCloseable {
 
     private RecipientDevices getRecipientDevices(final SendMessageResult sendMessageResult) {
         if (sendMessageResult.isSuccess() && sendMessageResult.getSuccess().getContent().isPresent()) {
-            final var recipientId = recipientResolver.resolveRecipient(sendMessageResult.getAddress());
-            return new RecipientDevices(recipientId, sendMessageResult.getSuccess().getDevices());
+            final var serviceId = sendMessageResult.getAddress().getServiceId();
+            return new RecipientDevices(serviceId, sendMessageResult.getSuccess().getDevices());
         } else {
             return null;
         }
@@ -264,31 +274,36 @@ public class MessageSendLogStore implements AutoCloseable {
     private long insert(
             final List<RecipientDevices> recipientDevices,
             final long sentTimestamp,
-            final SignalServiceProtos.Content content,
-            final ContentHint contentHint
+            final Content content,
+            final ContentHint contentHint,
+            final boolean urgent
     ) {
         byte[] groupId = getGroupId(content);
 
+        final var sql = """
+                        INSERT INTO %s (timestamp, group_id, content, content_hint, urgent)
+                        VALUES (?,?,?,?,?)
+                        RETURNING _id
+                        """.formatted(TABLE_MESSAGE_SEND_LOG_CONTENT);
         try (final var connection = database.getConnection()) {
             connection.setAutoCommit(false);
             final long contentId;
-            try (final var statement = connection.prepareStatement(
-                    "INSERT INTO %s (timestamp, group_id, content, content_hint) VALUES (?,?,?,?)".formatted(
-                            TABLE_MESSAGE_SEND_LOG_CONTENT))) {
+            try (final var statement = connection.prepareStatement(sql)) {
                 statement.setLong(1, sentTimestamp);
                 statement.setBytes(2, groupId);
-                statement.setBytes(3, content.toByteArray());
+                statement.setBytes(3, content.encode());
                 statement.setInt(4, contentHint.getType());
-                statement.executeUpdate();
-                final var generatedKeys = statement.getGeneratedKeys();
-                if (generatedKeys.next()) {
-                    contentId = generatedKeys.getLong(1);
+                statement.setBoolean(5, urgent);
+                final var generatedKey = Utils.executeQueryForOptional(statement, Utils::getIdMapper);
+                if (generatedKey.isPresent()) {
+                    contentId = generatedKey.get();
                 } else {
                     contentId = -1;
                 }
             }
             if (contentId == -1) {
                 logger.warn("Failed to insert message send log content");
+                connection.commit();
                 return -1;
             }
             insertRecipientsForExistingContent(contentId, recipientDevices, connection);
@@ -301,17 +316,15 @@ public class MessageSendLogStore implements AutoCloseable {
         }
     }
 
-    private byte[] getGroupId(final SignalServiceProtos.Content content) {
+    private byte[] getGroupId(final Content content) {
         try {
-            return !content.hasDataMessage()
+            return content.dataMessage == null
                     ? null
-                    : content.getDataMessage().hasGroup()
-                            ? content.getDataMessage().getGroup().getId().toByteArray()
-                            : content.getDataMessage().hasGroupV2()
-                                    ? GroupUtils.getGroupIdV2(new GroupMasterKey(content.getDataMessage()
-                                    .getGroupV2()
-                                    .getMasterKey()
-                                    .toByteArray())).serialize()
+                    : content.dataMessage.group != null && content.dataMessage.group.id != null
+                            ? content.dataMessage.group.id.toByteArray()
+                            : content.dataMessage.groupV2 != null && content.dataMessage.groupV2.masterKey != null
+                                    ? GroupUtils.getGroupIdV2(new GroupMasterKey(content.dataMessage.groupV2.masterKey.toByteArray()))
+                                    .serialize()
                                     : null;
         } catch (InvalidInputException e) {
             logger.warn("Failed to parse groupId id from content");
@@ -320,7 +333,8 @@ public class MessageSendLogStore implements AutoCloseable {
     }
 
     private void insertRecipientsForExistingContent(
-            final long contentId, final List<RecipientDevices> recipientDevices
+            final long contentId,
+            final List<RecipientDevices> recipientDevices
     ) {
         try (final var connection = database.getConnection()) {
             connection.setAutoCommit(false);
@@ -332,13 +346,18 @@ public class MessageSendLogStore implements AutoCloseable {
     }
 
     private void insertRecipientsForExistingContent(
-            final long contentId, final List<RecipientDevices> recipientDevices, final Connection connection
+            final long contentId,
+            final List<RecipientDevices> recipientDevices,
+            final Connection connection
     ) throws SQLException {
-        try (final var statement = connection.prepareStatement(
-                "INSERT INTO %s (recipient_id, device_id, content_id) VALUES (?,?,?)".formatted(TABLE_MESSAGE_SEND_LOG))) {
+        final var sql = """
+                        INSERT INTO %s (address, device_id, content_id)
+                        VALUES (?,?,?)
+                        """.formatted(TABLE_MESSAGE_SEND_LOG);
+        try (final var statement = connection.prepareStatement(sql)) {
             for (final var recipientDevice : recipientDevices) {
                 for (final var deviceId : recipientDevice.deviceIds()) {
-                    statement.setLong(1, recipientDevice.recipientId().id());
+                    statement.setString(1, recipientDevice.serviceId().toString());
                     statement.setInt(2, deviceId);
                     statement.setLong(3, contentId);
                     statement.executeUpdate();
@@ -348,50 +367,44 @@ public class MessageSendLogStore implements AutoCloseable {
     }
 
     private void deleteOutdatedEntries(final Connection connection) throws SQLException {
-        try (final var statement = connection.prepareStatement("DELETE FROM %s WHERE timestamp < ?".formatted(
-                TABLE_MESSAGE_SEND_LOG_CONTENT))) {
+        final var sql = """
+                        DELETE FROM %s
+                        WHERE timestamp < ?
+                        """.formatted(TABLE_MESSAGE_SEND_LOG_CONTENT);
+        try (final var statement = connection.prepareStatement(sql)) {
             statement.setLong(1, System.currentTimeMillis() - LOG_DURATION.toMillis());
             final var rowCount = statement.executeUpdate();
             if (rowCount > 0) {
                 logger.debug("Removed {} outdated entries from the message send log", rowCount);
+            } else {
+                logger.trace("No outdated entries to be removed from message send log.");
             }
         }
     }
 
     private void deleteOrphanedLogContents(final Connection connection) throws SQLException {
-        try (final var statement = connection.prepareStatement(
-                "DELETE FROM %s WHERE _id NOT IN (SELECT content_id FROM %s)".formatted(TABLE_MESSAGE_SEND_LOG_CONTENT,
-                        TABLE_MESSAGE_SEND_LOG))) {
+        final var sql = """
+                        DELETE FROM %s
+                        WHERE _id NOT IN (SELECT content_id FROM %s)
+                        """.formatted(TABLE_MESSAGE_SEND_LOG_CONTENT, TABLE_MESSAGE_SEND_LOG);
+        try (final var statement = connection.prepareStatement(sql)) {
             statement.executeUpdate();
         }
     }
 
-    private <T> Stream<T> executeQueryForStream(
-            PreparedStatement statement, ResultSetMapper<T> mapper
-    ) throws SQLException {
-        final var resultSet = statement.executeQuery();
-
-        return StreamSupport.stream(new Spliterators.AbstractSpliterator<>(Long.MAX_VALUE, Spliterator.ORDERED) {
-            @Override
-            public boolean tryAdvance(final Consumer<? super T> consumer) {
-                try {
-                    if (!resultSet.next()) {
-                        return false;
-                    }
-                    consumer.accept(mapper.apply(resultSet));
-                    return true;
-                } catch (SQLException e) {
-                    logger.warn("Failed to read from database result", e);
-                    throw new RuntimeException(e);
-                }
-            }
-        }, false);
+    private MessageSendLogEntry getMessageSendLogEntryFromResultSet(ResultSet resultSet) throws SQLException {
+        final var groupId = Optional.ofNullable(resultSet.getBytes("group_id")).map(GroupId::unknownVersion);
+        final Content content;
+        try {
+            content = Content.ADAPTER.decode(resultSet.getBinaryStream("content"));
+        } catch (IOException e) {
+            logger.warn("Failed to parse content from message send log", e);
+            return null;
+        }
+        final var contentHint = ContentHint.fromType(resultSet.getInt("content_hint"));
+        final var urgent = resultSet.getBoolean("urgent");
+        return new MessageSendLogEntry(groupId, content, contentHint, urgent);
     }
 
-    private interface ResultSetMapper<T> {
-
-        T apply(ResultSet resultSet) throws SQLException;
-    }
-
-    private record RecipientDevices(RecipientId recipientId, List<Integer> deviceIds) {}
+    private record RecipientDevices(ServiceId serviceId, List<Integer> deviceIds) {}
 }

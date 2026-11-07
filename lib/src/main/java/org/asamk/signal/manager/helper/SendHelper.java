@@ -1,36 +1,45 @@
 package org.asamk.signal.manager.helper;
 
-import com.google.protobuf.ByteString;
-
-import org.asamk.signal.manager.SignalDependencies;
+import org.asamk.signal.manager.api.Contact;
+import org.asamk.signal.manager.api.GroupId;
+import org.asamk.signal.manager.api.GroupNotFoundException;
+import org.asamk.signal.manager.api.GroupSendingNotAllowedException;
+import org.asamk.signal.manager.api.NotAGroupMemberException;
+import org.asamk.signal.manager.api.Pair;
+import org.asamk.signal.manager.api.Profile;
 import org.asamk.signal.manager.api.UnregisteredRecipientException;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.groups.GroupNotFoundException;
-import org.asamk.signal.manager.groups.GroupSendingNotAllowedException;
 import org.asamk.signal.manager.groups.GroupUtils;
-import org.asamk.signal.manager.groups.NotAGroupMemberException;
+import org.asamk.signal.manager.internal.SignalDependencies;
 import org.asamk.signal.manager.storage.SignalAccount;
 import org.asamk.signal.manager.storage.groups.GroupInfo;
-import org.asamk.signal.manager.storage.recipients.Profile;
+import org.asamk.signal.manager.storage.groups.GroupInfoV2;
 import org.asamk.signal.manager.storage.recipients.RecipientId;
 import org.asamk.signal.manager.storage.sendLog.MessageSendLogEntry;
+import org.signal.core.models.ServiceId;
+import org.signal.core.models.ServiceId.ACI;
+import org.signal.libsignal.protocol.InvalidKeyException;
+import org.signal.libsignal.protocol.InvalidRegistrationIdException;
+import org.signal.libsignal.protocol.NoSessionException;
+import org.signal.libsignal.protocol.SignalProtocolAddress;
+import org.signal.libsignal.protocol.message.DecryptionErrorMessage;
+import org.signal.libsignal.zkgroup.groups.GroupSecretParams;
+import org.signal.libsignal.zkgroup.groupsend.GroupSendEndorsement;
+import org.signal.network.crypto.SealedSenderAccess;
+import org.signal.network.crypto.UnidentifiedAccess;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.whispersystems.libsignal.InvalidKeyException;
-import org.whispersystems.libsignal.InvalidRegistrationIdException;
-import org.whispersystems.libsignal.NoSessionException;
-import org.whispersystems.libsignal.SignalProtocolAddress;
-import org.whispersystems.libsignal.protocol.DecryptionErrorMessage;
-import org.whispersystems.libsignal.util.guava.Optional;
 import org.whispersystems.signalservice.api.SignalServiceMessageSender;
 import org.whispersystems.signalservice.api.crypto.ContentHint;
-import org.whispersystems.signalservice.api.crypto.UnidentifiedAccess;
-import org.whispersystems.signalservice.api.crypto.UnidentifiedAccessPair;
 import org.whispersystems.signalservice.api.crypto.UntrustedIdentityException;
+import org.whispersystems.signalservice.api.groupsv2.GroupSendEndorsements;
 import org.whispersystems.signalservice.api.messages.SendMessageResult;
 import org.whispersystems.signalservice.api.messages.SignalServiceDataMessage;
+import org.whispersystems.signalservice.api.messages.SignalServiceEditMessage;
 import org.whispersystems.signalservice.api.messages.SignalServiceReceiptMessage;
+import org.whispersystems.signalservice.api.messages.SignalServiceStoryMessage;
+import org.whispersystems.signalservice.api.messages.SignalServiceStoryMessageRecipient;
 import org.whispersystems.signalservice.api.messages.SignalServiceTypingMessage;
+import org.whispersystems.signalservice.api.messages.calls.SignalServiceCallMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SentTranscriptMessage;
 import org.whispersystems.signalservice.api.messages.multidevice.SignalServiceSyncMessage;
 import org.whispersystems.signalservice.api.push.DistributionId;
@@ -40,21 +49,27 @@ import org.whispersystems.signalservice.api.push.exceptions.ProofRequiredExcepti
 import org.whispersystems.signalservice.api.push.exceptions.RateLimitException;
 import org.whispersystems.signalservice.api.push.exceptions.UnregisteredUserException;
 import org.whispersystems.signalservice.internal.push.exceptions.InvalidUnidentifiedAccessHeaderException;
+import org.whispersystems.signalservice.internal.push.http.PartialSendCompleteListener;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
+import okio.ByteString;
+
 public class SendHelper {
 
-    private final static Logger logger = LoggerFactory.getLogger(SendHelper.class);
+    private static final Logger logger = LoggerFactory.getLogger(SendHelper.class);
 
     private final SignalAccount account;
     private final SignalDependencies dependencies;
@@ -71,15 +86,28 @@ public class SendHelper {
      * The message is extended with the current expiration timer.
      */
     public SendMessageResult sendMessage(
-            final SignalServiceDataMessage.Builder messageBuilder, final RecipientId recipientId
-    ) throws IOException {
-        final var contact = account.getContactStore().getContact(recipientId);
-        final var expirationTime = contact != null ? contact.getMessageExpirationTime() : 0;
-        messageBuilder.withExpiration(expirationTime);
-        messageBuilder.withProfileKey(account.getProfileKey().serialize());
+            final SignalServiceDataMessage.Builder messageBuilder,
+            final RecipientId recipientId,
+            Optional<Long> editTargetTimestamp,
+            boolean urgent
+    ) {
+        var contact = account.getContactStore().getContact(recipientId);
+        if (contact == null || !contact.isProfileSharingEnabled() || contact.isHidden()) {
+            final var contactBuilder = contact == null ? Contact.newBuilder() : Contact.newBuilder(contact);
+            contact = contactBuilder.withIsProfileSharingEnabled(true).withIsHidden(false).build();
+            account.getContactStore().storeContact(recipientId, contact);
+        }
+
+        messageBuilder.withExpiration(contact.messageExpirationTime());
+        messageBuilder.withExpireTimerVersion(contact.messageExpirationTimeVersion());
+
+        if (!contact.isBlocked()) {
+            final var profileKey = account.getProfileKey().serialize();
+            messageBuilder.withProfileKey(profileKey);
+        }
 
         final var message = messageBuilder.build();
-        return sendMessage(message, recipientId);
+        return sendMessage(message, recipientId, editTargetTimestamp, urgent);
     }
 
     /**
@@ -87,10 +115,14 @@ public class SendHelper {
      * The message is extended with the current expiration timer for the group and the group context.
      */
     public List<SendMessageResult> sendAsGroupMessage(
-            SignalServiceDataMessage.Builder messageBuilder, GroupId groupId
+            final SignalServiceDataMessage.Builder messageBuilder,
+            final GroupId groupId,
+            final boolean includeSelf,
+            final Optional<Long> editTargetTimestamp,
+            boolean urgent
     ) throws IOException, GroupNotFoundException, NotAGroupMemberException, GroupSendingNotAllowedException {
         final var g = getGroupForSending(groupId);
-        return sendAsGroupMessage(messageBuilder, g);
+        return sendAsGroupMessage(messageBuilder, g, includeSelf, editTargetTimestamp, urgent);
     }
 
     /**
@@ -100,131 +132,146 @@ public class SendHelper {
     public List<SendMessageResult> sendGroupMessage(
             final SignalServiceDataMessage message,
             final Set<RecipientId> recipientIds,
-            final DistributionId distributionId
+            final GroupInfo groupInfo
     ) throws IOException {
-        return sendGroupMessage(message, recipientIds, distributionId, ContentHint.IMPLICIT);
-    }
-
-    public SendMessageResult sendDeliveryReceipt(
-            RecipientId recipientId, List<Long> messageIds
-    ) {
-        var receiptMessage = new SignalServiceReceiptMessage(SignalServiceReceiptMessage.Type.DELIVERY,
-                messageIds,
-                System.currentTimeMillis());
-
-        return sendReceiptMessage(receiptMessage, recipientId);
+        return sendGroupMessage(message, recipientIds, groupInfo, ContentHint.IMPLICIT, Optional.empty(), true);
     }
 
     public SendMessageResult sendReceiptMessage(
-            final SignalServiceReceiptMessage receiptMessage, final RecipientId recipientId
+            final SignalServiceReceiptMessage receiptMessage,
+            final RecipientId recipientId
     ) {
         final var messageSendLogStore = account.getMessageSendLogStore();
         final var result = handleSendMessage(recipientId,
-                (messageSender, address, unidentifiedAccess) -> messageSender.sendReceipt(address,
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendReceipt(address,
                         unidentifiedAccess,
-                        receiptMessage));
-        messageSendLogStore.insertIfPossible(receiptMessage.getWhen(), result, ContentHint.IMPLICIT);
+                        receiptMessage,
+                        includePniSignature));
+        messageSendLogStore.insertIfPossible(receiptMessage.getWhen(), result, ContentHint.IMPLICIT, false);
         handleSendMessageResult(result);
         return result;
     }
 
+    public SendMessageResult sendProfileKey(RecipientId recipientId) {
+        logger.debug("Sending updated profile key to recipient: {}", recipientId);
+        final var profileKey = account.getProfileKey().serialize();
+        final var message = SignalServiceDataMessage.newBuilder()
+                .asProfileKeyUpdate(true)
+                .withProfileKey(profileKey)
+                .build();
+        return handleSendMessage(recipientId,
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendDataMessage(
+                        address,
+                        unidentifiedAccess,
+                        ContentHint.IMPLICIT,
+                        message,
+                        SignalServiceMessageSender.IndividualSendEvents.EMPTY,
+                        false,
+                        includePniSignature));
+    }
+
     public SendMessageResult sendRetryReceipt(
-            DecryptionErrorMessage errorMessage, RecipientId recipientId, Optional<GroupId> groupId
+            DecryptionErrorMessage errorMessage,
+            RecipientId recipientId,
+            Optional<GroupId> groupId
     ) {
         logger.debug("Sending retry receipt for {} to {}, device: {}",
                 errorMessage.getTimestamp(),
                 recipientId,
                 errorMessage.getDeviceId());
         final var result = handleSendMessage(recipientId,
-                (messageSender, address, unidentifiedAccess) -> messageSender.sendRetryReceipt(address,
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendRetryReceipt(
+                        address,
                         unidentifiedAccess,
-                        groupId.transform(GroupId::serialize),
+                        groupId.map(GroupId::serialize),
                         errorMessage));
         handleSendMessageResult(result);
         return result;
     }
 
     public SendMessageResult sendNullMessage(RecipientId recipientId) {
-        final var result = handleSendMessage(recipientId, SignalServiceMessageSender::sendNullMessage);
+        final var result = handleSendMessage(recipientId,
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendNullMessage(
+                        address,
+                        unidentifiedAccess));
         handleSendMessageResult(result);
         return result;
     }
 
     public SendMessageResult sendSelfMessage(
-            SignalServiceDataMessage.Builder messageBuilder
+            SignalServiceDataMessage.Builder messageBuilder,
+            Optional<Long> editTargetTimestamp
     ) {
         final var recipientId = account.getSelfRecipientId();
         final var contact = account.getContactStore().getContact(recipientId);
-        final var expirationTime = contact != null ? contact.getMessageExpirationTime() : 0;
-        messageBuilder.withExpiration(expirationTime);
+        messageBuilder.withExpiration(contact != null ? contact.messageExpirationTime() : 0);
+        messageBuilder.withExpireTimerVersion(contact != null ? contact.messageExpirationTimeVersion() : 1);
 
         var message = messageBuilder.build();
-        return sendSelfMessage(message);
+        return sendSelfMessage(message, editTargetTimestamp);
     }
 
     public SendMessageResult sendSyncMessage(SignalServiceSyncMessage message) {
         var messageSender = dependencies.getMessageSender();
+        if (!account.isMultiDevice()) {
+            logger.trace("Not sending sync message because there are no linked devices.");
+            return SendMessageResult.success(account.getSelfAddress(), List.of(), false, false, 0, Optional.empty());
+        }
         try {
-            return messageSender.sendSyncMessage(message, context.getUnidentifiedAccessHelper().getAccessForSync());
-        } catch (UnregisteredUserException e) {
+            return messageSender.sendSyncMessage(message);
+        } catch (Throwable e) {
             var address = context.getRecipientHelper().resolveSignalServiceAddress(account.getSelfRecipientId());
-            return SendMessageResult.unregisteredFailure(address);
-        } catch (ProofRequiredException e) {
-            var address = context.getRecipientHelper().resolveSignalServiceAddress(account.getSelfRecipientId());
-            return SendMessageResult.proofRequiredFailure(address, e);
-        } catch (RateLimitException e) {
-            var address = context.getRecipientHelper().resolveSignalServiceAddress(account.getSelfRecipientId());
-            logger.warn("Sending failed due to rate limiting from the signal server: {}", e.getMessage());
-            return SendMessageResult.networkFailure(address);
-        } catch (org.whispersystems.signalservice.api.crypto.UntrustedIdentityException e) {
-            var address = context.getRecipientHelper().resolveSignalServiceAddress(account.getSelfRecipientId());
-            return SendMessageResult.identityFailure(address, e.getIdentityKey());
-        } catch (IOException e) {
-            var address = context.getRecipientHelper().resolveSignalServiceAddress(account.getSelfRecipientId());
-            logger.warn("Failed to send message due to IO exception: {}", e.getMessage());
-            return SendMessageResult.networkFailure(address);
+            try {
+                return SignalServiceMessageSender.mapSendErrorToSendResult(e, System.currentTimeMillis(), address);
+            } catch (IOException ex) {
+                logger.warn("Failed to send message due to IO exception: {}", e.getMessage());
+                logger.debug("Exception", e);
+                return SendMessageResult.networkFailure(address);
+            }
         }
     }
 
-    public SendMessageResult sendTypingMessage(
-            SignalServiceTypingMessage message, RecipientId recipientId
-    ) {
+    public SendMessageResult sendTypingMessage(SignalServiceTypingMessage message, RecipientId recipientId) {
         final var result = handleSendMessage(recipientId,
-                (messageSender, address, unidentifiedAccess) -> messageSender.sendTyping(address,
-                        unidentifiedAccess,
-                        message));
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendTyping(List.of(
+                        address), List.of(unidentifiedAccess), message, null).getFirst());
         handleSendMessageResult(result);
         return result;
     }
 
     public List<SendMessageResult> sendGroupTypingMessage(
-            SignalServiceTypingMessage message, GroupId groupId
+            SignalServiceTypingMessage message,
+            GroupId groupId
     ) throws IOException, NotAGroupMemberException, GroupNotFoundException, GroupSendingNotAllowedException {
         final var g = getGroupForSending(groupId);
         if (g.isAnnouncementGroup() && !g.isAdmin(account.getSelfRecipientId())) {
             throw new GroupSendingNotAllowedException(groupId, g.getTitle());
         }
-        final var distributionId = g.getDistributionId();
         final var recipientIds = g.getMembersWithout(account.getSelfRecipientId());
 
-        return sendGroupTypingMessage(message, recipientIds, distributionId);
+        return sendGroupTypingMessage(message, recipientIds, g);
     }
 
     public SendMessageResult resendMessage(
-            final RecipientId recipientId, final long timestamp, final MessageSendLogEntry messageSendLogEntry
+            final RecipientId recipientId,
+            final long timestamp,
+            final MessageSendLogEntry messageSendLogEntry
     ) {
+        logger.trace("Resending message {} to {}", timestamp, recipientId);
         if (messageSendLogEntry.groupId().isEmpty()) {
             return handleSendMessage(recipientId,
-                    (messageSender, address, unidentifiedAccess) -> messageSender.resendContent(address,
+                    (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.resendContent(
+                            address,
                             unidentifiedAccess,
                             timestamp,
                             messageSendLogEntry.content(),
                             messageSendLogEntry.contentHint(),
-                            Optional.absent()));
+                            Optional.empty(),
+                            messageSendLogEntry.urgent()));
         }
 
         final var groupId = messageSendLogEntry.groupId().get();
-        final var group = account.getGroupStore().getGroup(groupId);
+        final var group = context.getGroupHelper().getGroup(groupId);
 
         if (group == null) {
             logger.debug("Could not find a matching group for the groupId {}! Skipping message send.",
@@ -237,19 +284,20 @@ public class SendHelper {
 
         final var senderKeyDistributionMessage = dependencies.getMessageSender()
                 .getOrCreateNewGroupSession(group.getDistributionId());
-        final var distributionBytes = ByteString.copyFrom(senderKeyDistributionMessage.serialize());
+        final var distributionBytes = ByteString.of(senderKeyDistributionMessage.serialize());
         final var contentToSend = messageSendLogEntry.content()
-                .toBuilder()
-                .setSenderKeyDistributionMessage(distributionBytes)
+                .newBuilder()
+                .senderKeyDistributionMessage(distributionBytes)
                 .build();
 
         final var result = handleSendMessage(recipientId,
-                (messageSender, address, unidentifiedAccess) -> messageSender.resendContent(address,
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.resendContent(address,
                         unidentifiedAccess,
                         timestamp,
                         contentToSend,
                         messageSendLogEntry.contentHint(),
-                        Optional.of(group.getGroupId().serialize())));
+                        Optional.of(group.getGroupId().serialize()),
+                        messageSendLogEntry.urgent()));
 
         if (result.isSuccess()) {
             final var address = context.getRecipientHelper().resolveSignalServiceAddress(recipientId);
@@ -257,7 +305,7 @@ public class SendHelper {
                     .getDevices()
                     .stream()
                     .map(device -> new SignalProtocolAddress(address.getIdentifier(), device))
-                    .collect(Collectors.toList());
+                    .toList();
 
             account.getSenderKeyStore().markSenderKeySharedWith(group.getDistributionId(), addresses);
         }
@@ -265,14 +313,125 @@ public class SendHelper {
         return result;
     }
 
+    public SendMessageResult sendCallMessage(
+            final SignalServiceCallMessage callMessage,
+            final RecipientId recipientId
+    ) {
+        final var messageSendLogStore = account.getMessageSendLogStore();
+        final var result = handleSendMessage(recipientId,
+                (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendCallMessage(
+                        address,
+                        unidentifiedAccess,
+                        callMessage));
+        if (callMessage.getTimestamp().isPresent()) {
+            messageSendLogStore.insertIfPossible(callMessage.getTimestamp().get(),
+                    result,
+                    ContentHint.IMPLICIT,
+                    callMessage.isUrgent());
+        }
+        handleSendMessageResult(result);
+        return result;
+    }
+
+    /**
+     * Send a story message (file attachment) to "My Story".
+     */
+    public List<SendMessageResult> sendStoryMessage(
+            SignalServiceStoryMessage storyMessage,
+            long timestamp,
+            Set<RecipientId> recipientIds,
+            boolean allowsReplies
+    ) throws IOException {
+        final var messageSender = dependencies.getMessageSender();
+
+        final var recipientIdList = List.copyOf(recipientIds);
+        final var addressesMap = recipientIdList.stream()
+                .collect(Collectors.toMap(id -> id, context.getRecipientHelper()::resolveSignalServiceAddress));
+        final var unidentifiedAccessesMap = context.getUnidentifiedAccessHelper().getAccessFor(recipientIds);
+
+        final var addresses = recipientIdList.stream().map(addressesMap::get).toList();
+        final var unidentifiedAccesses = recipientIdList.stream().map(unidentifiedAccessesMap::get).toList();
+        final var storyMessageRecipients = recipientIdList.stream()
+                .map(id -> new SignalServiceStoryMessageRecipient(addressesMap.get(id),
+                        List.of(DistributionId.MY_STORY.asUuid().toString()),
+                        allowsReplies))
+                .collect(Collectors.toSet());
+
+        final List<SendMessageResult> results;
+        try {
+            results = messageSender.sendGroupStory(DistributionId.MY_STORY,
+                    Optional.empty(),
+                    addresses,
+                    unidentifiedAccesses,
+                    null,
+                    false,
+                    storyMessage,
+                    timestamp,
+                    storyMessageRecipients,
+                    null);
+        } catch (UntrustedIdentityException | InvalidKeyException | NoSessionException |
+                 InvalidRegistrationIdException e) {
+            throw new IOException(e);
+        }
+
+        for (var r : results) {
+            handleSendMessageResult(r);
+        }
+
+        return results;
+    }
+
+    /**
+     * Send a story message (file attachment) to a group.
+     */
+    public List<SendMessageResult> sendGroupStoryMessage(
+            SignalServiceStoryMessage storyMessage,
+            long timestamp,
+            GroupInfoV2 groupInfo,
+            boolean allowsReplies
+    ) throws IOException {
+        final var messageSender = dependencies.getMessageSender();
+
+        final var allRecipientIds = groupInfo.getMembersWithout(account.getSelfRecipientId());
+
+        final SenderKeySenderHandler senderKeySender = (distId, recipients, unidentifiedAccess, groupSendEndorsements, isRecipientUpdate) -> messageSender.sendGroupStory(
+                distId,
+                Optional.of(groupInfo.getMasterKey().serialize()),
+                recipients,
+                unidentifiedAccess,
+                groupSendEndorsements,
+                isRecipientUpdate,
+                storyMessage,
+                timestamp,
+                recipients.stream()
+                        .map(address -> new SignalServiceStoryMessageRecipient(address,
+                                List.of(groupInfo.getDistributionId().asUuid().toString()),
+                                allowsReplies))
+                        .collect(Collectors.toSet()),
+                null);
+        final var results = sendGroupMessageInternal(null, senderKeySender, allRecipientIds, groupInfo, false);
+
+        for (var r : results) {
+            handleSendMessageResult(r);
+        }
+
+        return results;
+    }
+
     private List<SendMessageResult> sendAsGroupMessage(
-            final SignalServiceDataMessage.Builder messageBuilder, final GroupInfo g
+            final SignalServiceDataMessage.Builder messageBuilder,
+            final GroupInfo g,
+            final boolean includeSelf,
+            final Optional<Long> editTargetTimestamp,
+            boolean urgent
     ) throws IOException, GroupSendingNotAllowedException {
         GroupUtils.setGroupContext(messageBuilder, g);
         messageBuilder.withExpiration(g.getMessageExpirationTimer());
 
         final var message = messageBuilder.build();
-        final var recipients = g.getMembersWithout(account.getSelfRecipientId());
+        final var recipients = includeSelf
+                ? g.getMemberRecipientIds()
+                : g.getMembersWithout(account.getSelfRecipientId());
 
         if (g.isAnnouncementGroup() && !g.isAdmin(account.getSelfRecipientId())) {
             if (message.getBody().isPresent()
@@ -285,59 +444,94 @@ public class SendHelper {
             }
         }
 
-        return sendGroupMessage(message, recipients, g.getDistributionId(), ContentHint.RESENDABLE);
+        return sendGroupMessage(message, recipients, g, ContentHint.RESENDABLE, editTargetTimestamp, urgent);
     }
 
     private List<SendMessageResult> sendGroupMessage(
             final SignalServiceDataMessage message,
             final Set<RecipientId> recipientIds,
-            final DistributionId distributionId,
-            final ContentHint contentHint
+            final GroupInfo groupInfo,
+            final ContentHint contentHint,
+            final Optional<Long> editTargetTimestamp,
+            boolean urgent
     ) throws IOException {
         final var messageSender = dependencies.getMessageSender();
         final var messageSendLogStore = account.getMessageSendLogStore();
         final AtomicLong entryId = new AtomicLong(-1);
 
-        final LegacySenderHandler legacySender = (recipients, unidentifiedAccess, isRecipientUpdate) -> messageSender.sendDataMessage(
+        final PartialSendCompleteListener partialSendCompleteListener = sendResult -> {
+            logger.trace("Partial message send result: {}", sendResult.isSuccess());
+            synchronized (entryId) {
+                if (entryId.get() == -1) {
+                    final var newId = messageSendLogStore.insertIfPossible(message.getTimestamp(),
+                            sendResult,
+                            contentHint,
+                            urgent);
+                    entryId.set(newId);
+                } else {
+                    messageSendLogStore.addRecipientToExistingEntryIfPossible(entryId.get(), sendResult);
+                }
+            }
+        };
+        final LegacySenderHandler legacySender = (recipients, unidentifiedAccess, isRecipientUpdate) ->
+                editTargetTimestamp.isEmpty()
+                        ? messageSender.sendDataMessage(recipients,
+                        unidentifiedAccess,
+                        isRecipientUpdate,
+                        contentHint,
+                        message,
+                        SignalServiceMessageSender.LegacyGroupEvents.EMPTY,
+                        partialSendCompleteListener,
+                        () -> false,
+                        urgent)
+                        : messageSender.sendEditMessage(recipients,
+                                unidentifiedAccess,
+                                isRecipientUpdate,
+                                contentHint,
+                                message,
+                                SignalServiceMessageSender.LegacyGroupEvents.EMPTY,
+                                partialSendCompleteListener,
+                                () -> false,
+                                urgent,
+                                editTargetTimestamp.get());
+        final SenderKeySenderHandler senderKeySender = (distId, recipients, unidentifiedAccess, groupSendEndorsements, isRecipientUpdate) -> messageSender.sendGroupDataMessage(
+                distId,
                 recipients,
                 unidentifiedAccess,
+                groupSendEndorsements,
                 isRecipientUpdate,
                 contentHint,
                 message,
-                SignalServiceMessageSender.LegacyGroupEvents.EMPTY,
+                SignalServiceMessageSender.SenderKeyGroupEvents.EMPTY,
+                urgent,
+                false,
+                editTargetTimestamp.map(timestamp -> new SignalServiceEditMessage(timestamp, message)).orElse(null),
                 sendResult -> {
-                    logger.trace("Partial message send result: {}", sendResult.isSuccess());
+                    logger.trace("Partial message send results: {}", sendResult.size());
                     synchronized (entryId) {
                         if (entryId.get() == -1) {
                             final var newId = messageSendLogStore.insertIfPossible(message.getTimestamp(),
                                     sendResult,
-                                    contentHint);
+                                    contentHint,
+                                    urgent);
                             entryId.set(newId);
                         } else {
                             messageSendLogStore.addRecipientToExistingEntryIfPossible(entryId.get(), sendResult);
                         }
                     }
-                },
-                () -> false);
-        final SenderKeySenderHandler senderKeySender = (distId, recipients, unidentifiedAccess, isRecipientUpdate) -> {
-            final var res = messageSender.sendGroupDataMessage(distId,
-                    recipients,
-                    unidentifiedAccess,
-                    isRecipientUpdate,
-                    contentHint,
-                    message,
-                    SignalServiceMessageSender.SenderKeyGroupEvents.EMPTY);
-            synchronized (entryId) {
-                if (entryId.get() == -1) {
-                    final var newId = messageSendLogStore.insertIfPossible(message.getTimestamp(), res, contentHint);
-                    entryId.set(newId);
-                } else {
-                    messageSendLogStore.addRecipientToExistingEntryIfPossible(entryId.get(), res);
-                }
-            }
-            return res;
-        };
-        final var results = sendGroupMessageInternal(legacySender, senderKeySender, recipientIds, distributionId);
+                    synchronized (entryId) {
+                        if (entryId.get() == -1) {
+                            final var newId = messageSendLogStore.insertIfPossible(message.getTimestamp(),
+                                    sendResult,
+                                    contentHint,
+                                    urgent);
+                            entryId.set(newId);
+                        } else {
+                            messageSendLogStore.addRecipientToExistingEntryIfPossible(entryId.get(), sendResult);
+                        }
+                    }
+                });
+        final var results = sendGroupMessageInternal(legacySender, senderKeySender, recipientIds, groupInfo, false);
 
         for (var r : results) {
             handleSendMessageResult(r);
@@ -349,7 +543,7 @@ public class SendHelper {
     private List<SendMessageResult> sendGroupTypingMessage(
             final SignalServiceTypingMessage message,
             final Set<RecipientId> recipientIds,
-            final DistributionId distributionId
+            final GroupInfo groupInfo
     ) throws IOException {
         final var messageSender = dependencies.getMessageSender();
         final var results = sendGroupMessageInternal((recipients, unidentifiedAccess, isRecipientUpdate) -> messageSender.sendTyping(
@@ -357,12 +551,16 @@ public class SendHelper {
                         unidentifiedAccess,
                         message,
                         () -> false),
-                (distId, recipients, unidentifiedAccess, isRecipientUpdate) -> messageSender.sendGroupTyping(distId,
+                (distId, recipients, unidentifiedAccess, groupSendEndorsements, isRecipientUpdate) -> messageSender.sendGroupTyping(
+                        distId,
                         recipients,
                         unidentifiedAccess,
-                        message),
+                        groupSendEndorsements,
+                        message,
+                        null),
                 recipientIds,
-                distributionId);
+                groupInfo,
+                false);
 
         for (var r : results) {
             handleSendMessageResult(r);
@@ -371,7 +569,7 @@ public class SendHelper {
         return results;
     }
 
-    private GroupInfo getGroupForSending(GroupId groupId) throws GroupNotFoundException, NotAGroupMemberException {
+    private GroupInfo getGroupForSending(GroupId groupId) throws GroupNotFoundException, NotAGroupMemberException, GroupSendingNotAllowedException {
         var g = context.getGroupHelper().getGroup(groupId);
         if (g == null) {
             throw new GroupNotFoundException(groupId);
@@ -379,132 +577,235 @@ public class SendHelper {
         if (!g.isMember(account.getSelfRecipientId())) {
             throw new NotAGroupMemberException(groupId, g.getTitle());
         }
+        if (g.isTerminated()) {
+            // Other clients drop messages sent to a terminated group.
+            throw new GroupSendingNotAllowedException(groupId, g.getTitle());
+        }
+        if (!g.isProfileSharingEnabled()) {
+            g.setProfileSharingEnabled(true);
+            account.getGroupStore().updateGroup(g);
+        }
         return g;
     }
 
+    /**
+     * @param isRecipientUpdate isRecipientUpdate is true if we've already sent this message to some recipients in the past, otherwise false.
+     */
     private List<SendMessageResult> sendGroupMessageInternal(
             final LegacySenderHandler legacySender,
             final SenderKeySenderHandler senderKeySender,
             final Set<RecipientId> recipientIds,
-            final DistributionId distributionId
+            final GroupInfo groupInfo,
+            final boolean isRecipientUpdate
     ) throws IOException {
         long startTime = System.currentTimeMillis();
-        // isRecipientUpdate is true if we've already sent this message to some recipients in the past, otherwise false.
-        final var isRecipientUpdate = false;
-        Set<RecipientId> senderKeyTargets = distributionId == null
-                ? Set.of()
-                : getSenderKeyCapableRecipientIds(recipientIds);
-        final var allResults = new ArrayList<SendMessageResult>(recipientIds.size());
 
-        if (senderKeyTargets.size() > 0) {
+        // Recipients that are already known to be unregistered are skipped here.
+        // Otherwise every group send re-attempts them via the slow legacy 1:1
+        // fan-out, which on large groups can take tens of seconds (and time out).
+        // The unregistered flag is maintained independently by profile/CDS
+        // discovery, which clears it once a recipient registers again, so they
+        // are re-included automatically. An unregisteredFailure result is still
+        // returned for each skipped recipient, so callers see them unchanged.
+        final var skippedResults = new ArrayList<SendMessageResult>();
+        final Set<RecipientId> targetRecipientIds;
+        final var unregisteredRecipientIds = account.getRecipientStore().getUnregisteredRecipientIds(recipientIds);
+        if (unregisteredRecipientIds.isEmpty()) {
+            targetRecipientIds = recipientIds;
+        } else {
+            logger.debug("Skipping {} known-unregistered recipient(s) in group send.", unregisteredRecipientIds.size());
+            targetRecipientIds = new HashSet<>(recipientIds);
+            targetRecipientIds.removeAll(unregisteredRecipientIds);
+            for (final var recipientId : unregisteredRecipientIds) {
+                skippedResults.add(SendMessageResult.unregisteredFailure(context.getRecipientHelper()
+                        .resolveSignalServiceAddress(recipientId)));
+            }
+        }
+
+        final var addressesMap = targetRecipientIds.stream()
+                .collect(Collectors.toMap(id -> id, context.getRecipientHelper()::resolveSignalServiceAddress));
+        final var unidentifiedAccessesMap = context.getUnidentifiedAccessHelper().getAccessFor(targetRecipientIds);
+        final var groupSendEndorsementsResult = getGroupSendEndorsements(groupInfo);
+        final var groupSecretParams = groupInfo instanceof GroupInfoV2 gv2
+                ? GroupSecretParams.deriveFromMasterKey((gv2.getMasterKey()))
+                : null;
+
+        final var groupSendEndorsements = groupSendEndorsementsResult == null
+                ? null
+                : groupSendEndorsementsResult.second();
+        final var groupSendEndorsementsExpirationMs = groupSendEndorsementsResult == null
+                ? 0
+                : groupSendEndorsementsResult.first();
+        // Only current members may get our sender key. The recipients can include others, e.g. pending members
+        // for a group update, and sharing the key with them would make the next send rotate it again.
+        final var memberIds = groupInfo.getMemberRecipientIds();
+        Set<RecipientId> senderKeyTargets = groupInfo.getDistributionId() == null || groupSendEndorsements == null
+                ? Set.of()
+                : targetRecipientIds.stream()
+                        .filter(memberIds::contains)
+                        .filter(s -> this.isSenderKeyCapable(s,
+                                addressesMap.get(s),
+                                unidentifiedAccessesMap.get(s),
+                                groupSendEndorsements))
+                        .collect(Collectors.toSet());
+        if (senderKeyTargets.size() < 2) {
+            logger.debug("Too few sender-key-capable users ({}). Doing all legacy sends.", senderKeyTargets.size());
+            senderKeyTargets = Set.of();
+        } else {
+            logger.debug("Can use sender key for {}/{} recipients.",
+                    senderKeyTargets.size(),
+                    targetRecipientIds.size());
+        }
+
+        final var allResults = new ArrayList<SendMessageResult>(recipientIds.size());
+        if (!senderKeyTargets.isEmpty()) {
+            final var senderCertificate = this.context.getUnidentifiedAccessHelper().getSenderCertificateFor(null);
+            final var addresses = senderKeyTargets.stream().map(addressesMap::get).toList();
+            final var requiredGroupSendEndorsements = new GroupSendEndorsements(groupSendEndorsementsExpirationMs,
+                    senderKeyTargets.stream()
+                            .collect(Collectors.toMap(recipientId -> (ACI) addressesMap.get(recipientId).getServiceId(),
+                                    groupSendEndorsements::get)),
+                    senderCertificate,
+                    groupSecretParams);
             final var results = sendGroupMessageInternalWithSenderKey(senderKeySender,
-                    senderKeyTargets,
-                    distributionId,
+                    groupInfo.getDistributionId(),
+                    memberIds,
+                    addresses,
+                    senderKeyTargets.stream().map(unidentifiedAccessesMap::get).toList(),
+                    requiredGroupSendEndorsements,
                     isRecipientUpdate);
 
             if (results == null) {
                 senderKeyTargets = Set.of();
             } else {
                 results.stream().filter(SendMessageResult::isSuccess).forEach(allResults::add);
+                final var recipientResolver = account.getRecipientResolver();
                 final var failedTargets = results.stream()
                         .filter(r -> !r.isSuccess())
-                        .map(r -> context.getRecipientHelper().resolveRecipient(r.getAddress()))
+                        .map(r -> recipientResolver.resolveRecipient(r.getAddress()))
                         .toList();
-                if (failedTargets.size() > 0) {
+                if (!failedTargets.isEmpty()) {
                     senderKeyTargets = new HashSet<>(senderKeyTargets);
                     failedTargets.forEach(senderKeyTargets::remove);
                 }
             }
         }
 
-        final var legacyTargets = new HashSet<>(recipientIds);
+        final var legacyTargets = new HashSet<>(targetRecipientIds);
         legacyTargets.removeAll(senderKeyTargets);
-        final boolean onlyTargetIsSelfWithLinkedDevice = recipientIds.isEmpty() && account.isMultiDevice();
+        final boolean onlyTargetIsSelfWithLinkedDevice = targetRecipientIds.isEmpty() && account.isMultiDevice();
 
-        if (legacyTargets.size() > 0 || onlyTargetIsSelfWithLinkedDevice) {
-            if (legacyTargets.size() > 0) {
+        if (legacySender != null && (!legacyTargets.isEmpty() || onlyTargetIsSelfWithLinkedDevice)) {
+            if (!legacyTargets.isEmpty()) {
                 logger.debug("Need to do {} legacy sends.", legacyTargets.size());
             } else {
                 logger.debug("Need to do a legacy send to send a sync message for a group of only ourselves.");
             }
 
+            final var addresses = legacyTargets.stream().map(addressesMap::get).toList();
+            final var unidentifiedAccess = legacyTargets.stream().map(unidentifiedAccessesMap::get).toList();
+            final var senderCertificate = unidentifiedAccess.stream()
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .map(UnidentifiedAccess::getUnidentifiedCertificate)
+                    .orElse(null);
+            final var expirationMs = Instant.ofEpochMilli(groupSendEndorsementsExpirationMs);
+            final var groupSendTokens = groupSendEndorsements != null && groupSecretParams != null
+                    ? legacyTargets.stream()
+                    .map(groupSendEndorsements::get)
+                    .map(endorsement -> Optional.ofNullable(endorsement)
+                            .map(e -> e.toFullToken(groupSecretParams, expirationMs))
+                            .orElse(null))
+                    .toList()
+                    : null;
+            final var sealedSenderAccesses = SealedSenderAccess.forFanOutGroupSend(groupSendTokens,
+                    senderCertificate,
+                    unidentifiedAccess);
             final List<SendMessageResult> results = sendGroupMessageInternalWithLegacy(legacySender,
-                    legacyTargets,
-                    isRecipientUpdate || allResults.size() > 0);
+                    addresses,
+                    sealedSenderAccesses,
+                    isRecipientUpdate || !allResults.isEmpty());
             allResults.addAll(results);
         }
+        allResults.addAll(skippedResults);
         final var duration = Duration.ofMillis(System.currentTimeMillis() - startTime);
         logger.debug("Sending took {}", duration.toString());
         return allResults;
     }
 
-    private Set<RecipientId> getSenderKeyCapableRecipientIds(final Set<RecipientId> recipientIds) {
-        final var selfProfile = context.getProfileHelper().getRecipientProfile(account.getSelfRecipientId());
-        if (selfProfile == null || !selfProfile.getCapabilities().contains(Profile.Capability.senderKey)) {
-            logger.debug("Not all of our devices support sender key. Using legacy.");
-            return Set.of();
+    private Pair<Long, Map<RecipientId, GroupSendEndorsement>> getGroupSendEndorsements(final GroupInfo groupInfo) {
+        if (!(groupInfo instanceof GroupInfoV2 groupInfoV2)) {
+            return null;
         }
 
-        final var senderKeyTargets = new HashSet<RecipientId>();
-        final var recipientList = new ArrayList<>(recipientIds);
-        final var profiles = context.getProfileHelper().getRecipientProfile(recipientList).iterator();
-        for (final var recipientId : recipientList) {
-            final var profile = profiles.next();
-            if (profile == null || !profile.getCapabilities().contains(Profile.Capability.senderKey)) {
-                continue;
+        var groupSendEndorsementMap = account.getGroupStore().getGroupEndorsements(groupInfoV2.getGroupId());
+        var groupSendEndorsementExpirationMs = account.getGroupStore()
+                .getGroupEndorsementExpirationMs(groupInfoV2.getGroupId());
+        if (groupSendEndorsementMap.isEmpty()
+                || groupSendEndorsementExpirationMs - TimeUnit.HOURS.toMillis(2) < System.currentTimeMillis()) {
+            logger.debug("No group send endorsements available, trying to update");
+            this.context.getGroupHelper().updateGroupSendEndorsements(groupInfoV2.getGroupId());
+            groupSendEndorsementMap = account.getGroupStore().getGroupEndorsements(groupInfoV2.getGroupId());
+            groupSendEndorsementExpirationMs = account.getGroupStore()
+                    .getGroupEndorsementExpirationMs(groupInfoV2.getGroupId());
+            if (groupSendEndorsementMap.isEmpty()
+                    || groupSendEndorsementExpirationMs - TimeUnit.HOURS.toMillis(2) < System.currentTimeMillis()) {
+                logger.debug("Updating group send endorsements was not successful");
+                return null;
             }
+        }
+        return new Pair<>(groupSendEndorsementExpirationMs, groupSendEndorsementMap);
+    }
 
-            final var access = context.getUnidentifiedAccessHelper().getAccessFor(recipientId);
-            if (!access.isPresent() || !access.get().getTargetUnidentifiedAccess().isPresent()) {
-                continue;
-            }
-
-            final var identity = account.getIdentityKeyStore().getIdentity(recipientId);
-            if (identity == null || !identity.getTrustLevel().isTrusted()) {
-                continue;
-            }
-
-            senderKeyTargets.add(recipientId);
+    private boolean isSenderKeyCapable(
+            final RecipientId recipientId,
+            final SignalServiceAddress address,
+            final UnidentifiedAccess access,
+            final Map<RecipientId, GroupSendEndorsement> groupSendEndorsements
+    ) {
+        if (access == null || !address.hasValidServiceId() || !(address.getServiceId() instanceof ACI aci)) {
+            return false;
         }
 
-        if (senderKeyTargets.size() < 2) {
-            logger.debug("Too few sender-key-capable users ({}). Doing all legacy sends.", senderKeyTargets.size());
-            return Set.of();
+        if (!groupSendEndorsements.containsKey(recipientId)) {
+            return false;
         }
 
-        logger.debug("Can use sender key for {}/{} recipients.", senderKeyTargets.size(), recipientIds.size());
-        return senderKeyTargets;
+        final var identity = account.getIdentityKeyStore().getIdentityInfo(aci);
+        if (identity == null || !identity.getTrustLevel().isTrusted()) {
+            return false;
+        }
+        return true;
     }
 
     private List<SendMessageResult> sendGroupMessageInternalWithLegacy(
-            final LegacySenderHandler sender, final Set<RecipientId> recipientIds, final boolean isRecipientUpdate
+            final LegacySenderHandler sender,
+            final List<SignalServiceAddress> addresses,
+            final List<SealedSenderAccess> unidentifiedAccesses,
+            final boolean isRecipientUpdate
     ) throws IOException {
-        final var recipientIdList = new ArrayList<>(recipientIds);
-        final var addresses = recipientIdList.stream()
-                .map(context.getRecipientHelper()::resolveSignalServiceAddress)
-                .toList();
-        final var unidentifiedAccesses = context.getUnidentifiedAccessHelper().getAccessFor(recipientIdList);
         try {
             final var results = sender.send(addresses, unidentifiedAccesses, isRecipientUpdate);
 
             final var successCount = results.stream().filter(SendMessageResult::isSuccess).count();
-            logger.debug("Successfully sent using 1:1 to {}/{} legacy targets.", successCount, recipientIdList.size());
+            logger.debug("Successfully sent using 1:1 to {}/{} legacy targets.", successCount, addresses.size());
             return results;
-        } catch (org.whispersystems.signalservice.api.crypto.UntrustedIdentityException e) {
+        } catch (org.whispersystems.signalservice.api.crypto.UntrustedIdentityException | NoSessionException e) {
             return List.of();
         }
     }
 
     private List<SendMessageResult> sendGroupMessageInternalWithSenderKey(
             final SenderKeySenderHandler sender,
-            final Set<RecipientId> recipientIds,
             final DistributionId distributionId,
+            final Set<RecipientId> memberIds,
+            final List<SignalServiceAddress> addresses,
+            final List<UnidentifiedAccess> unidentifiedAccesses,
+            final GroupSendEndorsements groupSendEndorsements,
             final boolean isRecipientUpdate
     ) throws IOException {
-        final var recipientIdList = new ArrayList<>(recipientIds);
-
         long keyCreateTime = account.getSenderKeyStore()
-                .getCreateTimeForOurKey(account.getSelfRecipientId(), account.getDeviceId(), distributionId);
+                .getCreateTimeForOurKey(account.getAci(), account.getDeviceId(), distributionId);
         long keyAge = System.currentTimeMillis() - keyCreateTime;
 
         if (keyCreateTime != -1 && keyAge > TimeUnit.DAYS.toMillis(14)) {
@@ -513,24 +814,15 @@ public class SendHelper {
                     keyCreateTime,
                     keyAge,
                     TimeUnit.MILLISECONDS.toDays(keyAge));
-            account.getSenderKeyStore().deleteOurKey(account.getSelfRecipientId(), distributionId);
+            account.getSenderKeyStore().deleteOurKey(account.getAci(), distributionId);
         }
-
-        List<SignalServiceAddress> addresses = recipientIdList.stream()
-                .map(context.getRecipientHelper()::resolveSignalServiceAddress)
-                .collect(Collectors.toList());
-        List<UnidentifiedAccess> unidentifiedAccesses = context.getUnidentifiedAccessHelper()
-                .getAccessFor(recipientIdList)
-                .stream()
-                .map(Optional::get)
-                .map(UnidentifiedAccessPair::getTargetUnidentifiedAccess)
-                .map(Optional::get)
-                .collect(Collectors.toList());
+        rotateSenderKeyIfSharedWithNonMembers(distributionId, memberIds);
 
         try {
             List<SendMessageResult> results = sender.send(distributionId,
                     addresses,
                     unidentifiedAccesses,
+                    groupSendEndorsements,
                     isRecipientUpdate);
 
             final var successCount = results.stream().filter(SendMessageResult::isSuccess).count();
@@ -546,11 +838,11 @@ public class SendHelper {
             return null;
         } catch (NoSessionException e) {
             logger.warn("No session. Falling back to legacy sends.", e);
-            account.getSenderKeyStore().deleteOurKey(account.getSelfRecipientId(), distributionId);
+            account.getSenderKeyStore().deleteOurKey(account.getAci(), distributionId);
             return null;
         } catch (InvalidKeyException e) {
             logger.warn("Invalid key. Falling back to legacy sends.", e);
-            account.getSenderKeyStore().deleteOurKey(account.getSelfRecipientId(), distributionId);
+            account.getSenderKeyStore().deleteOurKey(account.getAci(), distributionId);
             return null;
         } catch (InvalidRegistrationIdException e) {
             logger.warn("Invalid registrationId. Falling back to legacy sends.", e);
@@ -558,20 +850,64 @@ public class SendHelper {
         } catch (NotFoundException e) {
             logger.warn("Someone was unregistered. Falling back to legacy sends.", e);
             return null;
+        } catch (IOException e) {
+            if (e.getCause() instanceof InvalidKeyException) {
+                logger.warn("Invalid key. Falling back to legacy sends.", e);
+                return null;
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * Rotate our sender key, if it was shared with someone who is no longer a member of the group,
+     * so that former members can't decrypt messages sent after they left or were removed.
+     * The official Signal clients do the same.
+     */
+    void rotateSenderKeyIfSharedWithNonMembers(final DistributionId distributionId, final Set<RecipientId> memberIds) {
+        final var senderKeyStore = account.getSenderKeyStore();
+        final var recipientResolver = account.getRecipientResolver();
+        final var sharedWithNonMember = senderKeyStore.getSenderKeySharedWith(distributionId)
+                .stream()
+                .map(SignalProtocolAddress::getName)
+                .distinct()
+                .map(ServiceId::parseOrNull)
+                .anyMatch(serviceId -> serviceId == null
+                        || !memberIds.contains(recipientResolver.resolveRecipient(serviceId)));
+        if (sharedWithNonMember) {
+            logger.debug("DistributionId {} was shared with someone who is no longer a group member. Rotating.",
+                    distributionId);
+            senderKeyStore.deleteOurKey(account.getAci(), distributionId);
         }
     }
 
     private SendMessageResult sendMessage(
-            SignalServiceDataMessage message, RecipientId recipientId
+            SignalServiceDataMessage message,
+            RecipientId recipientId,
+            Optional<Long> editTargetTimestamp,
+            boolean urgent
     ) {
         final var messageSendLogStore = account.getMessageSendLogStore();
         final var result = handleSendMessage(recipientId,
-                (messageSender, address, unidentifiedAccess) -> messageSender.sendDataMessage(address,
+                editTargetTimestamp.isEmpty()
+                        ? (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendDataMessage(
+                        address,
                         unidentifiedAccess,
                         ContentHint.RESENDABLE,
                         message,
-                        SignalServiceMessageSender.IndividualSendEvents.EMPTY));
-        messageSendLogStore.insertIfPossible(message.getTimestamp(), result, ContentHint.RESENDABLE);
+                        SignalServiceMessageSender.IndividualSendEvents.EMPTY,
+                        urgent,
+                        includePniSignature)
+                        : (messageSender, address, unidentifiedAccess, includePniSignature) -> messageSender.sendEditMessage(
+                                address,
+                                unidentifiedAccess,
+                                ContentHint.RESENDABLE,
+                                message,
+                                SignalServiceMessageSender.IndividualSendEvents.EMPTY,
+                                urgent,
+                                editTargetTimestamp.get()));
+        messageSendLogStore.insertIfPossible(message.getTimestamp(), result, ContentHint.RESENDABLE, urgent);
         handleSendMessageResult(result);
         return result;
     }
@@ -581,8 +917,13 @@ public class SendHelper {
 
         var address = context.getRecipientHelper().resolveSignalServiceAddress(recipientId);
         try {
+            final boolean includePniSignature = account.getPni() != null && account.getRecipientStore()
+                    .needsPniSignature(recipientId);
             try {
-                return s.send(messageSender, address, context.getUnidentifiedAccessHelper().getAccessFor(recipientId));
+                return s.send(messageSender,
+                        address,
+                        context.getUnidentifiedAccessHelper().getSealedSenderAccessFor(recipientId),
+                        includePniSignature);
             } catch (UnregisteredUserException e) {
                 final RecipientId newRecipientId;
                 try {
@@ -593,31 +934,31 @@ public class SendHelper {
                 address = context.getRecipientHelper().resolveSignalServiceAddress(newRecipientId);
                 return s.send(messageSender,
                         address,
-                        context.getUnidentifiedAccessHelper().getAccessFor(newRecipientId));
+                        context.getUnidentifiedAccessHelper().getSealedSenderAccessFor(newRecipientId),
+                        includePniSignature);
             }
-        } catch (UnregisteredUserException e) {
-            return SendMessageResult.unregisteredFailure(address);
-        } catch (ProofRequiredException e) {
-            return SendMessageResult.proofRequiredFailure(address, e);
-        } catch (RateLimitException e) {
-            logger.warn("Sending failed due to rate limiting from the signal server: {}", e.getMessage());
-            return SendMessageResult.networkFailure(address);
-        } catch (org.whispersystems.signalservice.api.crypto.UntrustedIdentityException e) {
-            return SendMessageResult.identityFailure(address, e.getIdentityKey());
-        } catch (IOException e) {
-            logger.warn("Failed to send message due to IO exception: {}", e.getMessage());
-            return SendMessageResult.networkFailure(address);
+        } catch (Throwable e) {
+            try {
+                return SignalServiceMessageSender.mapSendErrorToSendResult(e, System.currentTimeMillis(), address);
+            } catch (IOException ex) {
+                logger.warn("Failed to send message due to IO exception: {}", e.getMessage());
+                logger.debug("Exception", e);
+                return SendMessageResult.networkFailure(address);
+            }
         }
     }
 
-    private SendMessageResult sendSelfMessage(SignalServiceDataMessage message) {
+    private SendMessageResult sendSelfMessage(SignalServiceDataMessage message, Optional<Long> editTargetTimestamp) {
         var address = account.getSelfAddress();
         var transcript = new SentTranscriptMessage(Optional.of(address),
                 message.getTimestamp(),
-                message,
+                editTargetTimestamp.isEmpty() ? Optional.of(message) : Optional.empty(),
                 message.getExpiresInSeconds(),
-                Map.of(address, true),
-                false);
+                Map.of(address.getServiceId(), true),
+                false,
+                Optional.empty(),
+                Set.of(),
+                editTargetTimestamp.map((timestamp) -> new SignalServiceEditMessage(timestamp, message)));
         var syncMessage = SignalServiceSyncMessage.forSentTranscript(transcript);
 
         return sendSyncMessage(syncMessage);
@@ -625,13 +966,13 @@ public class SendHelper {
 
     private void handleSendMessageResult(final SendMessageResult r) {
         if (r.isSuccess() && !r.getSuccess().isUnidentified()) {
-            final var recipientId = context.getRecipientHelper().resolveRecipient(r.getAddress());
-            final var profile = account.getRecipientStore().getProfile(recipientId);
+            final var recipientId = account.getRecipientResolver().resolveRecipient(r.getAddress());
+            final var profile = account.getProfileStore().getProfile(recipientId);
             if (profile != null && (
                     profile.getUnidentifiedAccessMode() == Profile.UnidentifiedAccessMode.ENABLED
                             || profile.getUnidentifiedAccessMode() == Profile.UnidentifiedAccessMode.UNRESTRICTED
             )) {
-                account.getRecipientStore()
+                account.getProfileStore()
                         .storeProfile(recipientId,
                                 Profile.newBuilder(profile)
                                         .withUnidentifiedAccessMode(Profile.UnidentifiedAccessMode.UNKNOWN)
@@ -639,13 +980,13 @@ public class SendHelper {
             }
         }
         if (r.isUnregisteredFailure()) {
-            final var recipientId = context.getRecipientHelper().resolveRecipient(r.getAddress());
-            final var profile = account.getRecipientStore().getProfile(recipientId);
+            final var recipientId = account.getRecipientResolver().resolveRecipient(r.getAddress());
+            final var profile = account.getProfileStore().getProfile(recipientId);
             if (profile != null && (
                     profile.getUnidentifiedAccessMode() == Profile.UnidentifiedAccessMode.ENABLED
                             || profile.getUnidentifiedAccessMode() == Profile.UnidentifiedAccessMode.UNRESTRICTED
             )) {
-                account.getRecipientStore()
+                account.getProfileStore()
                         .storeProfile(recipientId,
                                 Profile.newBuilder(profile)
                                         .withUnidentifiedAccessMode(Profile.UnidentifiedAccessMode.UNKNOWN)
@@ -653,8 +994,9 @@ public class SendHelper {
             }
         }
         if (r.getIdentityFailure() != null) {
-            final var recipientId = context.getRecipientHelper().resolveRecipient(r.getAddress());
-            context.getIdentityHelper().handleIdentityFailure(recipientId, r.getIdentityFailure());
+            final var recipientId = account.getRecipientResolver().resolveRecipient(r.getAddress());
+            context.getIdentityHelper()
+                    .handleIdentityFailure(recipientId, r.getAddress().getServiceId(), r.getIdentityFailure());
         }
     }
 
@@ -663,8 +1005,9 @@ public class SendHelper {
         SendMessageResult send(
                 SignalServiceMessageSender messageSender,
                 SignalServiceAddress address,
-                Optional<UnidentifiedAccessPair> unidentifiedAccess
-        ) throws IOException, UnregisteredUserException, ProofRequiredException, RateLimitException, org.whispersystems.signalservice.api.crypto.UntrustedIdentityException;
+                SealedSenderAccess unidentifiedAccess,
+                boolean includePniSignature
+        ) throws IOException, UnregisteredUserException, ProofRequiredException, RateLimitException, org.whispersystems.signalservice.api.crypto.UntrustedIdentityException, NoSessionException;
     }
 
     interface SenderKeySenderHandler {
@@ -673,6 +1016,7 @@ public class SendHelper {
                 DistributionId distributionId,
                 List<SignalServiceAddress> recipients,
                 List<UnidentifiedAccess> unidentifiedAccess,
+                GroupSendEndorsements groupSendEndorsements,
                 boolean isRecipientUpdate
         ) throws IOException, UntrustedIdentityException, NoSessionException, InvalidKeyException, InvalidRegistrationIdException;
     }
@@ -681,8 +1025,8 @@ public class SendHelper {
 
         List<SendMessageResult> send(
                 List<SignalServiceAddress> recipients,
-                List<Optional<UnidentifiedAccessPair>> unidentifiedAccess,
+                List<SealedSenderAccess> unidentifiedAccess,
                 boolean isRecipientUpdate
-        ) throws IOException, UntrustedIdentityException;
+        ) throws IOException, UntrustedIdentityException, NoSessionException;
     }
 }

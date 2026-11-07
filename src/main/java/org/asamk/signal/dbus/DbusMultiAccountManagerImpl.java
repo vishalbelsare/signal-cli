@@ -2,7 +2,6 @@ package org.asamk.signal.dbus;
 
 import org.asamk.Signal;
 import org.asamk.SignalControl;
-import org.asamk.signal.DbusConfig;
 import org.asamk.signal.manager.Manager;
 import org.asamk.signal.manager.MultiAccountManager;
 import org.asamk.signal.manager.ProvisioningManager;
@@ -32,17 +31,23 @@ public class DbusMultiAccountManagerImpl implements MultiAccountManager {
     // TODO add listeners for added/removed accounts
     private final Set<Consumer<Manager>> onManagerAddedHandlers = new HashSet<>();
     private final Set<Consumer<Manager>> onManagerRemovedHandlers = new HashSet<>();
+    private final String busname;
 
-    public DbusMultiAccountManagerImpl(final SignalControl signalControl, DBusConnection connection) {
+    public DbusMultiAccountManagerImpl(
+            final SignalControl signalControl,
+            DBusConnection connection,
+            final String busname
+    ) {
         this.signalControl = signalControl;
         this.connection = connection;
+        this.busname = busname;
     }
 
     @Override
-    public List<String> getAccountNumbers() {
+    public List<Manager> getManagers() {
         return signalControl.listAccounts()
                 .stream()
-                .map(a -> getRemoteObject(a, Signal.class).getSelfNumber())
+                .map(a -> (Manager) new DbusManagerImpl(getRemoteObject(a, Signal.class), connection, busname))
                 .toList();
     }
 
@@ -54,6 +59,13 @@ public class DbusMultiAccountManagerImpl implements MultiAccountManager {
     }
 
     @Override
+    public void removeOnManagerAddedHandler(final Consumer<Manager> handler) {
+        synchronized (onManagerAddedHandlers) {
+            onManagerAddedHandlers.remove(handler);
+        }
+    }
+
+    @Override
     public void addOnManagerRemovedHandler(final Consumer<Manager> handler) {
         synchronized (onManagerRemovedHandlers) {
             onManagerRemovedHandlers.add(handler);
@@ -61,8 +73,17 @@ public class DbusMultiAccountManagerImpl implements MultiAccountManager {
     }
 
     @Override
-    public Manager getManager(final String phoneNumber) {
-        return new DbusManagerImpl(getRemoteObject(signalControl.getAccount(phoneNumber), Signal.class), connection);
+    public void removeOnManagerRemovedHandler(final Consumer<Manager> handler) {
+        synchronized (onManagerRemovedHandlers) {
+            onManagerRemovedHandlers.remove(handler);
+        }
+    }
+
+    @Override
+    public Manager getManager(final String identifier) {
+        return new DbusManagerImpl(getRemoteObject(signalControl.getAccount(identifier), Signal.class),
+                connection,
+                busname);
     }
 
     @Override
@@ -90,7 +111,7 @@ public class DbusMultiAccountManagerImpl implements MultiAccountManager {
 
     private <T extends DBusInterface> T getRemoteObject(final DBusPath path, final Class<T> type) {
         try {
-            return connection.getRemoteObject(DbusConfig.getBusname(), path.getPath(), type);
+            return connection.getRemoteObject(busname, path.getPath(), type);
         } catch (DBusException e) {
             throw new AssertionError(e);
         }

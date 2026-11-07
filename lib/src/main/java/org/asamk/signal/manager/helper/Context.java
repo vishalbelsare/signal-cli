@@ -1,19 +1,20 @@
 package org.asamk.signal.manager.helper;
 
-import org.asamk.signal.manager.AttachmentStore;
-import org.asamk.signal.manager.AvatarStore;
-import org.asamk.signal.manager.JobExecutor;
-import org.asamk.signal.manager.SignalDependencies;
-import org.asamk.signal.manager.StickerPackStore;
+import org.asamk.signal.manager.internal.JobExecutor;
+import org.asamk.signal.manager.internal.SignalDependencies;
+import org.asamk.signal.manager.storage.AttachmentStore;
+import org.asamk.signal.manager.storage.AvatarStore;
 import org.asamk.signal.manager.storage.SignalAccount;
+import org.asamk.signal.manager.storage.stickerPacks.StickerPackStore;
 
 import java.util.function.Supplier;
 
-public class Context {
+public class Context implements AutoCloseable {
 
     private final Object LOCK = new Object();
 
     private final SignalAccount account;
+    private final AccountFileUpdater accountFileUpdater;
     private final SignalDependencies dependencies;
     private final AvatarStore avatarStore;
     private final StickerPackStore stickerPackStore;
@@ -22,6 +23,7 @@ public class Context {
 
     private AccountHelper accountHelper;
     private AttachmentHelper attachmentHelper;
+    private CallManager callManager;
     private ContactHelper contactHelper;
     private GroupHelper groupHelper;
     private GroupV2Helper groupV2Helper;
@@ -40,12 +42,14 @@ public class Context {
 
     public Context(
             final SignalAccount account,
+            final AccountFileUpdater accountFileUpdater,
             final SignalDependencies dependencies,
             final AvatarStore avatarStore,
             final AttachmentStore attachmentStore,
             final StickerPackStore stickerPackStore
     ) {
         this.account = account;
+        this.accountFileUpdater = accountFileUpdater;
         this.dependencies = dependencies;
         this.avatarStore = avatarStore;
         this.stickerPackStore = stickerPackStore;
@@ -55,6 +59,10 @@ public class Context {
 
     public SignalAccount getAccount() {
         return account;
+    }
+
+    public AccountFileUpdater getAccountFileUpdater() {
+        return accountFileUpdater;
     }
 
     public SignalDependencies getDependencies() {
@@ -73,7 +81,7 @@ public class Context {
         return attachmentStore;
     }
 
-    JobExecutor getJobExecutor() {
+    public JobExecutor getJobExecutor() {
         return jobExecutor;
     }
 
@@ -83,6 +91,10 @@ public class Context {
 
     public AttachmentHelper getAttachmentHelper() {
         return getOrCreate(() -> attachmentHelper, () -> attachmentHelper = new AttachmentHelper(this));
+    }
+
+    public CallManager getCallManager() {
+        return getOrCreate(() -> callManager, () -> callManager = new CallManager(this));
     }
 
     public ContactHelper getContactHelper() {
@@ -107,7 +119,7 @@ public class Context {
     }
 
     PinHelper getPinHelper() {
-        return getOrCreate(() -> pinHelper, () -> pinHelper = new PinHelper(dependencies.getKeyBackupService()));
+        return getOrCreate(() -> pinHelper, () -> pinHelper = new PinHelper(dependencies.getSecureValueRecovery()));
     }
 
     public PreKeyHelper getPreKeyHelper() {
@@ -161,6 +173,14 @@ public class Context {
             creator.call();
             return supplier.get();
         }
+    }
+
+    @Override
+    public void close() {
+        if (callManager != null) {
+            callManager.close();
+        }
+        jobExecutor.close();
     }
 
     private interface Callable {

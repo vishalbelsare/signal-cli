@@ -5,6 +5,7 @@ vim:set ts=4 sw=4 tw=82 noet:
 :quotes.~:
 
 = signal-cli-dbus (5)
+:doctype: manpage
 
 == Name
 
@@ -12,11 +13,15 @@ signal-cli-dbus - A commandline and dbus interface for the Signal messenger
 
 == Synopsis
 
-*signal-cli* [--verbose] [--config CONFIG] [-a ACCOUNT] [-o {plain-text,json}] daemon [--dbus] [--dbus-system]
+*signal-cli* [--verbose] [--data-dir DATA_DIR] [-a ACCOUNT] [-o {plain-text,json}] daemon [--dbus] [--dbus-system]
 
-*dbus-send* [--system | --session] [--print-reply] --type=method_call --dest="org.asamk.Signal" /org/asamk/Signal[/_<phonenumber>] org.asamk.Signal.<method> [string:<string argument>] [array:<type>:<array argument>]
+*dbus-send* [--system | --session] [--print-reply] --type=method_call --dest="org.asamk.Signal" /org/asamk/Signal[/<account-id>] org.asamk.Signal.<method> [string:<string argument>] [array:<type>:<array argument>]
 
-Note: when daemon was started without explicit `-a ACCOUNT`, the `dbus-send` command requires adding the phone number in `/org/asamk/Signal/_<phonenumber>`.
+Note: when daemon was started without explicit `-a ACCOUNT`, use the account's
+object path returned by `org.asamk.SignalControl.listAccounts` or
+`org.asamk.SignalControl.getAccount`. Numbered accounts use
+`/org/asamk/Signal/_<phonenumber>`. Accounts without a phone number use
+`/org/asamk/Signal/<ACI>`, with hyphens replaced by underscores.
 
 == Description
 
@@ -45,8 +50,15 @@ The final parenthetical value (such as "boolean:") is the type indicator used by
 Exceptions are the names of the Java Exceptions returned in the body field.
 They typically contain an additional message with details.
 All Exceptions begin with "org.asamk.Signal.Error." which is omitted here for better readability.
+When sending a message, AttachmentInvalid means an attachment could not be read or uploaded, and the message
+was not sent to anyone; Failure may mean that it reached some recipients.
 
 Phone numbers always have the format +<countrycode><regional number>
+
+For an account without a phone number, use its ACI (Account ID) with the
+`signal-cli --dbus -a ACCOUNT` client. ACI selectors also work for numbered accounts.
+An account without a phone number cannot infer the country code of a recipient;
+use a complete international phone number, an ACI, or a Signal username.
 
 == Methods
 
@@ -67,14 +79,33 @@ This can be piped to a QR encoder to create a display that can be captured by a 
 
 For example:
 
-```
+[source,bash]
+----
 dbus-send --session --dest=org.asamk.Signal --type=method_call --print-reply /org/asamk/Signal org.asamk.Signal.link string:"My secondary client" | tr '\n' '\0' | sed 's/.*string //g' | sed 's/\"//g' | qrencode -s10 -tANSI256
-```
+----
 
-listAccounts() -> accountList<as>::
+listAccounts() -> accountList<ao>::
 * accountList : Array of all attached accounts in DBus object path form
 
 Exceptions: None
+
+getAccount(identifier<s>) -> account<o>::
+* identifier : Phone number or ACI of an attached account
+* account : DBus object path of the account
+
+Exceptions: org.asamk.SignalControl.Error.Failure if the account is unknown
+
+startLink() -> deviceLinkUri<s>::
+* deviceLinkUri : Provisioning URI to scan with the primary Signal device
+
+finishLink(deviceLinkUri<s>, newDeviceName<s>) -> identifier<s>::
+* deviceLinkUri : URI returned by startLink
+* newDeviceName : Name for the linked device
+* identifier : Phone number of the linked account, or its ACI when it has no phone number
+
+Both linking methods support accounts with or without a phone number.
+
+Exceptions: org.asamk.SignalControl.Error.Failure
 
 register(number<s>, voiceVerification<b>) -> <>::
 * number : Phone number
@@ -113,13 +144,14 @@ Exceptions: None
 
 The following methods listen to the account's object path, which is constructed as follows:
 
-- for single-account mode: "/org/asamk/Signal/"
-- for multi-account mode: "/org/asamk/Signal/" + DBusNumber
-* DBusNumber: account's phone number, with underscore (_) replacing plus (+)
+- for single-account mode: "/org/asamk/Signal"
+- for multi-account mode: "/org/asamk/Signal/" + DBusIdentifier
+* DBusIdentifier: account's phone number with underscore (_) replacing plus (+),
+  or its ACI with underscores replacing hyphens when there is no phone number
 
 getContactName(number<s>) -> name<s>::
 * number : Phone number
-* name : Contact's name in local storage (from the master device for a linked account, or the one set with setContactName); if not set, contact's profile name is used
+* name : Contact's name in local storage (from the primary device for a linked account, or the one set with setContactName); if not set, contact's profile name is used
 
 Exceptions: None
 
@@ -133,7 +165,12 @@ May result in e.g. two entries if a contact and profile name is set.
 Exceptions: None
 
 getSelfNumber() -> number<s>::
-* number : Your phone number
+* number : Your phone number, or an empty string for an account without a phone number
+
+Exceptions: None
+
+getSelfACI() -> aci<s>::
+* aci : Your account's ACI (Account ID), available with or without a phone number
 
 Exceptions: None
 
@@ -162,6 +199,14 @@ listNumbers() -> numbers<as>::
 * numbers : String array of all known numbers
 
 This is a concatenated list of all defined contacts as well of profiles known (e.g. peer group members or sender of received messages)
+
+Exceptions: None
+
+listRecipientIdentifiers() -> identifiers<as>::
+* identifiers : String array of known recipient identifiers, including recipients without a phone number
+
+Uses phone numbers where known and includes ACIs for recipients without a phone
+number. Unlike `listNumbers`, this method also includes numberless recipients.
 
 Exceptions: None
 
@@ -201,6 +246,15 @@ sendMessageReaction(emoji<s>, remove<b>, targetAuthor<s>, targetSentTimestamp<x>
 Depending on the type of the recipient(s) field this sends a reaction to one or multiple recipients.
 
 Exceptions: Failure, InvalidNumber
+
+sendPaymentNotification(receipt<ay>, note<s>, recipient<s>) -> timestamp<x>::
+* receipt : Byte array with the payment receipt blob
+* note : String with a note for the payment
+* recipient : String with the phone number of a single recipient
+
+* timestamp : Long, can be used to identify the corresponding Signal reply
+
+Exceptions: Failure
 
 sendNoteToSelfMessage(message<s>, attachments<as>) -> timestamp<x>::
 * message : Text to send (can be UTF8)
@@ -406,6 +460,24 @@ Only works if sent from a secondary device.
 
 Exceptions: Failure
 
+==== Identity related methods
+
+listIdentities() -> identities<a(oss)>::
+* identities : Array of structs (objectPath, id, name)
+** objectPath : DBusPath representing the identity object path
+** uuid : Internal uuid of the identity
+** number : Phone number of the identity
+
+Lists all know identities
+
+getIdentity(Number<s>) -> identityPath<o>::
+* Number : Phone number
+* identityPath : DBusPath object for the identity
+
+Gets the identity Dbus path for a given phone number
+
+Exceptions: Failure
+
 === Signal.Group interface
 
 The following methods listen to the group's object path, which can be obtained from the listGroups() method and is constructed as follows:
@@ -423,6 +495,7 @@ Groups have the following (case-sensitive) properties:
 * IsBlocked<b> : true=member will not receive group messages; false=not blocked
 * IsMember<b> (read-only) : always true (object path exists only for group members)
 * IsAdmin<b> (read-only) : true=member has admin privileges; false=not admin
+* IsTerminated<b> (read-only) : true=group was permanently ended by an admin; nobody (not even an admin) can send messages or start calls, sending is rejected locally
 * MessageExpirationTimer<i> : int32 representing message expiration time for group
 * Members<as> (read-only) : String array of group members' phone numbers
 * PendingMembers<as> (read-only) : String array of pending members' phone numbers
@@ -453,6 +526,7 @@ addMembers(recipients<as>) -> <>::
 * recipients : String array of phone numbers
 
 Add recipients to group if they are pending members; otherwise add recipients to list of requesting members.
+This command is also used to accept group invitations by adding yourself to a group.
 
 Exceptions: Failure
 
@@ -471,6 +545,11 @@ Exceptions: Failure
 
 quitGroup() -> <>::
 Exceptions: Failure, LastGroupAdmin
+
+terminateGroup() -> <>::
+Permanently terminate the group for all members (requires admin privileges). Afterwards nobody can send messages or start calls; members keep access to the existing history.
+
+Exceptions: Failure
 
 removeAdmins(recipients<as>) -> <>::
 * recipients : String array of phone numbers
@@ -517,6 +596,44 @@ To get all properties, use:
 `dbus-send --session --dest=org.asamk.Signal --print-reply $OBJECT_PATH org.freedesktop.DBus.Properties.GetAll string:org.asamk.Signal.Device`
 
 removeDevice() -> <>::
+
+Exceptions: Failure
+
+=== Signal.Identity interface
+
+The following methods listen to the Identities object path, which is constructed as follows:
+
+<ACCOUNT_PATH> + "/Identities/" + identity
+
+identity : Either the phone number of a contact with underscore (_) replacing plus (+) , or if not known its uuid
+
+Identities have the following (case-sensitive) properties:
+
+* Number<s> (read-only) : Phone number of the contact
+* Uuid<x> (read-only) : Internal uuid representing the contact
+* Fingerprint<x> (read-only) : Byte array representing the fingerprint
+* SafetyNumber<s> (read-only) : String representation of the safety number used to verify trust
+* TrustLevel<s> (read-only) : Current trust level (UNSTRUSTED, TRUSTED_UNVERIFIED, TRUSTED_VERIFIED)
+* AddedDate<x> (read-only) : Long representing the number of milliseconds since the Unix epoch
+* ScannableSafetyNumber<x> (read-only) : Byte array representation of the safety number
+
+To get a property, use (replacing `--session` with `--system` if needed):
+`dbus-send --session --dest=org.asamk.Signal --print-reply $OBJECT_PATH org.freedesktop.DBus.Properties.Get string:org.asamk.Signal.Identity string:$PROPERTY_NAME`
+
+To get all properties, use:
+`dbus-send --session --dest=org.asamk.Signal --print-reply $OBJECT_PATH org.freedesktop.DBus.Properties.GetAll string:org.asamk.Signal.Identity`
+
+trust() -> <>::
+
+Establish trust with the given identity.
+TrustLevel will become TRUSTED_UNVERFIED
+
+Exceptions: Failure
+
+trustVerified(SafetyNumber<s>) -> <>::
+
+Establish trust with the given identity using their safety number.
+TrustLevel will become TRUSTED_VERIFIED
 
 Exceptions: Failure
 

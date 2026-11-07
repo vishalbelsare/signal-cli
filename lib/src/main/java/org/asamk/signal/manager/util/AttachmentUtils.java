@@ -1,63 +1,109 @@
 package org.asamk.signal.manager.util;
 
-import org.asamk.signal.manager.AttachmentInvalidException;
-import org.whispersystems.libsignal.util.guava.Optional;
-import org.whispersystems.signalservice.api.messages.SignalServiceAttachment;
+import org.asamk.signal.manager.api.Message.AttachmentDimensions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.whispersystems.signalservice.api.messages.SignalServiceAttachmentStream;
+import org.whispersystems.signalservice.api.push.exceptions.ResumeLocationInvalidException;
 import org.whispersystems.signalservice.api.util.StreamDetails;
 import org.whispersystems.signalservice.internal.push.http.ResumableUploadSpec;
 
-import java.io.File;
+import java.io.ByteArrayInputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.io.InputStream;
+import java.util.Optional;
+import java.util.UUID;
+
+import javax.imageio.ImageIO;
 
 public class AttachmentUtils {
 
-    public static List<SignalServiceAttachment> getSignalServiceAttachments(List<String> attachments) throws AttachmentInvalidException {
-        List<SignalServiceAttachment> signalServiceAttachments = null;
-        if (attachments != null) {
-            signalServiceAttachments = new ArrayList<>(attachments.size());
-            for (var attachment : attachments) {
-                try {
-                    signalServiceAttachments.add(createAttachment(new File(attachment)));
-                } catch (IOException e) {
-                    throw new AttachmentInvalidException(attachment, e);
-                }
-            }
-        }
-        return signalServiceAttachments;
-    }
+    private static final Logger logger = LoggerFactory.getLogger(AttachmentUtils.class);
 
-    public static SignalServiceAttachmentStream createAttachment(File attachmentFile) throws IOException {
-        final var streamDetails = Utils.createStreamDetailsFromFile(attachmentFile);
-        return createAttachment(streamDetails, Optional.of(attachmentFile.getName()));
-    }
+    // Images are fully buffered in memory to probe their dimensions, so cap how large a file we'll do this for.
+    private static final long MAX_DIMENSION_PROBE_SIZE = 20 * 1024 * 1024;
 
-    public static SignalServiceAttachmentStream createAttachment(
-            StreamDetails streamDetails, Optional<String> name
-    ) {
-        // TODO mabybe add a parameter to set the voiceNote, borderless, preview, width, height and caption option
+    public static SignalServiceAttachmentStream createAttachmentStream(
+            StreamDetails streamDetails,
+            Optional<String> name,
+            boolean voiceNote,
+            AttachmentDimensions dimensions,
+            String blurHash,
+            ResumableUploadSpec resumableUploadSpec
+    ) throws ResumeLocationInvalidException, IOException {
         final var uploadTimestamp = System.currentTimeMillis();
-        Optional<byte[]> preview = Optional.absent();
-        Optional<String> caption = Optional.absent();
-        Optional<String> blurHash = Optional.absent();
-        final Optional<ResumableUploadSpec> resumableUploadSpec = Optional.absent();
-        return new SignalServiceAttachmentStream(streamDetails.getStream(),
-                streamDetails.getContentType(),
-                streamDetails.getLength(),
-                name,
-                false,
-                false,
-                false,
-                preview,
-                0,
-                0,
-                uploadTimestamp,
-                caption,
-                blurHash,
-                null,
-                null,
-                resumableUploadSpec);
+        final var probedStream = dimensions != null ? new ProbedStream(streamDetails.getStream(),
+                dimensions.width(),
+                dimensions.height()) : probeImageDimensions(streamDetails);
+        return SignalServiceAttachmentStream.newStreamBuilder()
+                .withStream(probedStream.inputStream())
+                .withContentType(streamDetails.getContentType())
+                .withLength(streamDetails.getLength())
+                .withFileName(name.orElse(null))
+                .withVoiceNote(voiceNote)
+                .withBlurHash(blurHash)
+                .withWidth(probedStream.width())
+                .withHeight(probedStream.height())
+                .withUploadTimestamp(uploadTimestamp)
+                .withResumableUploadSpec(resumableUploadSpec)
+                .withUuid(UUID.randomUUID())
+                .build();
     }
+
+    public static SignalServiceAttachmentStream createAttachmentStream(
+            StreamDetails streamDetails,
+            Optional<String> name,
+            ResumableUploadSpec resumableUploadSpec
+    ) throws ResumeLocationInvalidException, IOException {
+        return createAttachmentStream(streamDetails, name, false, null, null, resumableUploadSpec);
+    }
+
+    /**
+     * Reads the attachment's dimensions if it's an image, so recipients don't get a square-cropped thumbnail.
+     * Falls back to width/height 0 (today's behavior) if the content isn't an image, is too large to probe
+     * cheaply, or fails to parse.
+     */
+    private static ProbedStream probeImageDimensions(StreamDetails streamDetails) throws IOException {
+        final var contentType = streamDetails.getContentType();
+        final var length = streamDetails.getLength();
+        if (contentType == null
+                || !contentType.startsWith("image/")
+                || length <= 0
+                || length > MAX_DIMENSION_PROBE_SIZE) {
+            return new ProbedStream(streamDetails.getStream(), 0, 0);
+        }
+
+        final var stream = streamDetails.getStream();
+        var width = 0;
+        var height = 0;
+        if (stream instanceof FileInputStream fis) {
+            try {
+                final var image = ImageIO.read(fis);
+                if (image != null) {
+                    width = image.getWidth();
+                    height = image.getHeight();
+                }
+                fis.getChannel().position(0);
+            } catch (IOException | LinkageError e) {
+                logger.debug("Failed to probe image dimensions, sending without width/height: {}", e.getMessage());
+                fis.getChannel().position(0);
+            }
+            return new ProbedStream(fis, width, height);
+        }
+
+        final var bytes = stream.readAllBytes();
+        try {
+            final var image = ImageIO.read(new ByteArrayInputStream(bytes));
+            if (image != null) {
+                width = image.getWidth();
+                height = image.getHeight();
+            }
+        } catch (IOException | LinkageError e) {
+            logger.debug("Failed to probe image dimensions, sending without width/height: {}", e.getMessage());
+        }
+        return new ProbedStream(new ByteArrayInputStream(bytes), width, height);
+    }
+
+    private record ProbedStream(InputStream inputStream, int width, int height) {}
 }

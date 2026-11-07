@@ -1,11 +1,16 @@
 package org.asamk.signal.util;
 
+import net.sourceforge.argparse4j.inf.Namespace;
+
 import org.asamk.signal.commands.exceptions.UserErrorException;
 import org.asamk.signal.manager.Manager;
+import org.asamk.signal.manager.api.CaptchaRequiredException;
+import org.asamk.signal.manager.api.GroupId;
+import org.asamk.signal.manager.api.GroupIdFormatException;
 import org.asamk.signal.manager.api.InvalidNumberException;
+import org.asamk.signal.manager.api.RateLimitException;
+import org.asamk.signal.manager.api.ReceiveConfig;
 import org.asamk.signal.manager.api.RecipientIdentifier;
-import org.asamk.signal.manager.groups.GroupId;
-import org.asamk.signal.manager.groups.GroupIdFormatException;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -21,7 +26,8 @@ public class CommandUtil {
             final Manager m,
             final boolean isNoteToSelf,
             final List<String> recipientStrings,
-            final List<String> groupIdStrings
+            final List<String> groupIdStrings,
+            final List<String> usernameStrings
     ) throws UserErrorException {
         final var recipientIdentifiers = new HashSet<RecipientIdentifier>();
         if (isNoteToSelf) {
@@ -33,6 +39,9 @@ public class CommandUtil {
         }
         if (groupIdStrings != null) {
             recipientIdentifiers.addAll(CommandUtil.getGroupIdentifiers(groupIdStrings));
+        }
+        if (usernameStrings != null) {
+            recipientIdentifiers.addAll(CommandUtil.getUsernameIdentifiers(usernameStrings));
         }
 
         if (recipientIdentifiers.isEmpty()) {
@@ -75,7 +84,8 @@ public class CommandUtil {
     }
 
     public static Set<RecipientIdentifier.Single> getSingleRecipientIdentifiers(
-            final Collection<String> recipientStrings, final String localNumber
+            final Collection<String> recipientStrings,
+            final String localNumber
     ) throws UserErrorException {
         if (recipientStrings == null) {
             return Set.of();
@@ -88,12 +98,61 @@ public class CommandUtil {
     }
 
     public static RecipientIdentifier.Single getSingleRecipientIdentifier(
-            final String recipientString, final String localNumber
+            final String recipientString,
+            final String localNumber
     ) throws UserErrorException {
         try {
             return RecipientIdentifier.Single.fromString(recipientString, localNumber);
         } catch (InvalidNumberException e) {
             throw new UserErrorException("Invalid phone number '" + recipientString + "': " + e.getMessage(), e);
         }
+    }
+
+    public static Set<RecipientIdentifier.Username> getUsernameIdentifiers(Collection<String> usernameIdStrings) {
+        if (usernameIdStrings == null) {
+            return Set.of();
+        }
+        final var usernameIds = new HashSet<RecipientIdentifier.Username>();
+        for (final var usernameIdString : usernameIdStrings) {
+            usernameIds.add(new RecipientIdentifier.Username(usernameIdString));
+        }
+        return usernameIds;
+    }
+
+    public static String getCaptchaRequiredMessage(final CaptchaRequiredException e, final boolean captchaProvided) {
+        String message;
+        if (!captchaProvided) {
+            message = """
+                      Captcha required for verification, use --captcha CAPTCHA
+                      To get the token, go to https://signalcaptchas.org/registration/generate.html
+                      After solving the captcha, right-click on the "Open Signal" link and copy the link.""";
+        } else {
+            message = "Invalid captcha given.";
+        }
+        if (e.getNextVerificationAttemptMilliseconds() > 0) {
+            message += "\nNext Captcha may be provided at " + DateUtils.formatTimestamp(System.currentTimeMillis()
+                    + e.getNextVerificationAttemptMilliseconds());
+        }
+        return message;
+    }
+
+    public static String getRateLimitMessage(final RateLimitException e) {
+        String message = "Rate limit reached";
+        final var retryAfterMilliseconds = e.getRetryAfterMilliseconds();
+        if (retryAfterMilliseconds != null) {
+            message += "\nNext attempt may be tried at " + DateUtils.formatTimestamp(System.currentTimeMillis()
+                    + retryAfterMilliseconds);
+        }
+        return message;
+    }
+
+    public static ReceiveConfig getReceiveConfig(final Namespace ns) {
+        final var ignoreAttachments = Boolean.TRUE.equals(ns.getBoolean("ignore-attachments"));
+        final var ignoreStories = Boolean.TRUE.equals(ns.getBoolean("ignore-stories"));
+        final var ignoreAvatars = Boolean.TRUE.equals(ns.getBoolean("ignore-avatars"));
+        final var ignoreStickers = Boolean.TRUE.equals(ns.getBoolean("ignore-stickers"));
+        final var sendReadReceipts = Boolean.TRUE.equals(ns.getBoolean("send-read-receipts"));
+
+        return new ReceiveConfig(ignoreAttachments, ignoreStories, ignoreAvatars, ignoreStickers, sendReadReceipts);
     }
 }
